@@ -26,6 +26,7 @@ pub struct FileMetadata {
     pub file_ext: Option<String>, // Added field
     pub created_at: String, 
     pub icon_type: String, 
+    pub text_content: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

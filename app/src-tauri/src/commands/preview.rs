@@ -153,6 +153,12 @@ pub async fn cmd_get_preview(
                 log::info!("Returning path preview: {}", save_path_str);
                 return Ok(save_path_str);
             }
+        } else {
+            let text = msg.text();
+            if !text.trim().is_empty() {
+                let b64 = general_purpose::STANDARD.encode(text.as_bytes());
+                return Ok(format!("data:text/plain;base64,{}", b64));
+            }
         }
     }
     Err("File not found or failed to download".to_string())

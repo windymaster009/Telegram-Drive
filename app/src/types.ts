@@ -5,6 +5,7 @@ export interface TelegramFile {
     sizeStr: string; // Formatted size
     created_at?: string;
     type?: 'folder' | 'file'; // implied icon_type
+    text_content?: string | null;
     // Add other fields if backend sends them
 }
 

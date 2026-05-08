@@ -7,6 +7,37 @@ use crate::models::{FolderMetadata, FileMetadata};
 use crate::bandwidth::BandwidthManager;
 use crate::commands::utils::{resolve_peer, map_error};
 
+const TEXT_MESSAGE_PREVIEW_CHARS: usize = 32;
+
+fn text_message_name(message_id: i32, text: &str) -> String {
+    let mut preview = text
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("Text message")
+        .trim()
+        .chars()
+        .take(TEXT_MESSAGE_PREVIEW_CHARS)
+        .collect::<String>();
+
+    preview = preview
+        .chars()
+        .map(|c| match c {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            c if c.is_control() => ' ',
+            c => c,
+        })
+        .collect::<String>()
+        .trim()
+        .trim_matches('.')
+        .to_string();
+
+    if preview.is_empty() {
+        preview = "Text message".to_string();
+    }
+
+    format!("{}-{}.txt", preview, message_id)
+}
+
 #[tauri::command]
 pub async fn cmd_create_folder(
     name: String,
@@ -213,8 +244,23 @@ pub async fn cmd_download_file(
         .next()
         .ok_or_else(|| "Message not found".to_string())?;
 
-    let media = msg.media()
-        .ok_or_else(|| "No media in message".to_string())?;
+    let text = msg.text().to_string();
+
+    let media = match msg.media() {
+        Some(media) => media,
+        None if !text.trim().is_empty() => {
+            bw_state.can_transfer(text.len() as u64)?;
+            std::fs::write(&save_path, text.as_bytes()).map_err(|e| e.to_string())?;
+            bw_state.add_down(text.len() as u64);
+
+            if !tid.is_empty() {
+                let _ = app_handle.emit("download-progress", ProgressPayload { id: tid, percent: 100 });
+            }
+
+            return Ok("Download successful".to_string());
+        },
+        None => return Err("No media or text in message".to_string()),
+    };
 
     let total_size = match &media {
         Media::Document(d) => d.size() as u64,
@@ -321,8 +367,31 @@ pub async fn cmd_get_files(
                 _ => ("Unknown".to_string(), 0, None, None),
             };
             files.push(FileMetadata {
-                id: msg.id() as i64, folder_id, name, size: size as u64, mime_type: mime, file_ext: ext, created_at: msg.date().to_string(), icon_type: "file".into()
+                id: msg.id() as i64,
+                folder_id,
+                name,
+                size: size as u64,
+                mime_type: mime,
+                file_ext: ext,
+                created_at: msg.date().to_string(),
+                icon_type: "file".into(),
+                text_content: None,
             });
+        } else {
+            let text = msg.text().trim();
+            if !text.is_empty() {
+                files.push(FileMetadata {
+                    id: msg.id() as i64,
+                    folder_id,
+                    name: text_message_name(msg.id(), text),
+                    size: text.len() as u64,
+                    mime_type: Some("text/plain".into()),
+                    file_ext: Some("txt".into()),
+                    created_at: msg.date().to_string(),
+                    icon_type: "file".into(),
+                    text_content: Some(text.to_string()),
+                });
+            }
         }
     }
 
@@ -378,9 +447,27 @@ pub async fn cmd_search_global(
                         files.push(FileMetadata {
                             id: m.id as i64, folder_id, name, size,
                             mime_type: Some(mime), file_ext: ext,
-                            created_at: m.date.to_string(), icon_type: "file".into()
+                            created_at: m.date.to_string(), icon_type: "file".into(),
+                            text_content: None,
                         });
                     }
+                } else if !m.message.trim().is_empty() {
+                    let folder_id = match m.peer_id {
+                        tl::enums::Peer::Channel(c) => Some(c.channel_id),
+                        tl::enums::Peer::User(u) => Some(u.user_id),
+                        tl::enums::Peer::Chat(c) => Some(c.chat_id),
+                    };
+                    files.push(FileMetadata {
+                        id: m.id as i64,
+                        folder_id,
+                        name: text_message_name(m.id, &m.message),
+                        size: m.message.len() as u64,
+                        mime_type: Some("text/plain".into()),
+                        file_ext: Some("txt".into()),
+                        created_at: m.date.to_string(),
+                        icon_type: "file".into(),
+                        text_content: Some(m.message),
+                    });
                 }
             }
         }
@@ -404,9 +491,27 @@ pub async fn cmd_search_global(
                         files.push(FileMetadata {
                             id: m.id as i64, folder_id, name, size,
                             mime_type: Some(mime), file_ext: ext,
-                            created_at: m.date.to_string(), icon_type: "file".into()
+                            created_at: m.date.to_string(), icon_type: "file".into(),
+                            text_content: None,
                         });
                     }
+                } else if !m.message.trim().is_empty() {
+                    let folder_id = match m.peer_id {
+                        tl::enums::Peer::Channel(c) => Some(c.channel_id),
+                        tl::enums::Peer::User(u) => Some(u.user_id),
+                        tl::enums::Peer::Chat(c) => Some(c.chat_id),
+                    };
+                    files.push(FileMetadata {
+                        id: m.id as i64,
+                        folder_id,
+                        name: text_message_name(m.id, &m.message),
+                        size: m.message.len() as u64,
+                        mime_type: Some("text/plain".into()),
+                        file_ext: Some("txt".into()),
+                        created_at: m.date.to_string(),
+                        icon_type: "file".into(),
+                        text_content: Some(m.message),
+                    });
                 }
             }
         }

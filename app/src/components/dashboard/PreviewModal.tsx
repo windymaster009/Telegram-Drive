@@ -3,7 +3,7 @@ import { X, File, ChevronLeft, ChevronRight } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { TelegramFile } from '../../types';
-import { isImageFile } from '../../utils';
+import { isImageFile, isTextFile } from '../../utils';
 
 const PREVIEW_CACHE_TTL_MS = 5 * 60 * 1000;
 const PREVIEW_CACHE_MAX_ITEMS = 8;
@@ -51,6 +51,18 @@ const forgetPreview = (key: string) => {
 };
 
 const isSafeToPrefetch = (name: string) => isImageFile(name);
+
+const decodeTextDataUrl = (src: string) => {
+    const prefix = 'data:text/plain;base64,';
+    if (!src.startsWith(prefix)) return null;
+    try {
+        const binary = atob(src.slice(prefix.length));
+        const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+        return new TextDecoder().decode(bytes);
+    } catch {
+        return null;
+    }
+};
 
 interface PreviewModalProps {
     file: TelegramFile;
@@ -242,6 +254,12 @@ export function PreviewModal({ file, onClose, onNext, onPrev, currentIndex, tota
                                     setError('Failed to render image preview');
                                 }}
                             />
+                        ) : isTextFile(file.name) ? (
+                            <div className="bg-[#141c26] border border-white/10 shadow-2xl rounded-lg max-w-4xl max-h-[80vh] overflow-auto p-5">
+                                <pre className="text-left text-sm leading-6 text-white/90 whitespace-pre-wrap break-words font-mono">
+                                    {file.text_content || decodeTextDataUrl(src) || ''}
+                                </pre>
+                            </div>
                         ) : (
                             <div className="bg-[#1c1c1c] p-8 rounded-xl text-center border border-white/10 shadow-2xl">
                                 <File className="w-16 h-16 text-telegram-primary mx-auto mb-4" />
