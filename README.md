@@ -1,31 +1,28 @@
-# Telegram Drive 
+# Telegram Drive
 
-**Telegram Drive** is an open-source, cross-platform desktop application that turns your Telegram account into an unlimited, secure cloud storage drive. Built with **Tauri**, **Rust**, and **React**.
+Telegram Drive is an open-source desktop app that turns your Telegram account into a cloud storage drive. It is built with Tauri, Rust, React, TypeScript, and Vite.
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
-![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20MacOS%20%7C%20Linux-blue)
-
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-blue)
 
 ![Auth Screen](screenshots/AuthScreen.png)
 
-##  What is Telegram Drive?
+## What It Does
 
-Telegram Drive leverages the Telegram API to allow you to upload, organize, and manage files directly on Telegram's servers. It treats your "Saved Messages" and created Channels as folders, giving you a familiar file explorer interface for your Telegram cloud.
+Telegram Drive uses the Telegram API to upload, organize, preview, stream, and manage files through your Telegram account. Files stay tied to your Telegram account, and the app runs locally on your machine.
 
-###  Key Features
+## Features
 
-*   **Unlimited Cloud Storage**: Utilizing Telegram's generous cloud infrastructure.
-*   **High Performance Grid**: Virtual scrolling handles folders with thousands of files instantly.
-*   **Auto-Updates**: Seamless updates for Windows, macOS, and Linux.
-*   **Media Streaming**: Stream video and audio files directly without downloading.
-*   **PDF Viewer:** Built-in PDF support with infinite scrolling for seamless document reading.
-*   **Drag & Drop**: Intuitive drag-and-drop upload and file management.
-*   **Thumbnail Previews**: Inline thumbnails for images and media files.
-*   **Folder Management**: Create "Folders" (private Telegram Channels) to organize content.
-*   **Privacy Focused**: API keys and data stay local. No third-party servers.
-*   **Cross-Platform**: Native apps for macOS (Intel/ARM), Windows, and Linux.
+- Unlimited Telegram-backed cloud storage
+- Folder management using Telegram channels
+- Drag-and-drop uploads
+- File previews, thumbnails, audio playback, and video playback
+- PDF viewing
+- High-performance grid for large folders
+- Local-first privacy model
+- Cross-platform desktop support through Tauri
 
-##  Screenshots
+## Screenshots
 
 | Dashboard | File Preview |
 |-----------|--------------|
@@ -40,107 +37,266 @@ Telegram Drive leverages the Telegram API to allow you to upload, organize, and 
 | ![Audio Playback](screenshots/AudioPlayback.png) | ![Video Playback](screenshots/VideoPlayback.png) |
 
 | Auth Code Screen | Upload Example |
-|------------------|-------------|
+|------------------|----------------|
 | ![Auth Code Screen](screenshots/AuthCodeScreen.png) | ![Upload Example](screenshots/UploadExample.png) |
 
 | Folder Creation | Folder List View |
 |-----------------|------------------|
 | ![Folder Creation](screenshots/FolderCreation.png) | ![Folder List View](screenshots/FolderListView.png) |
 
-##  Tech Stack
+## Project Structure
 
-*   **Frontend**: React, TypeScript, TailwindCSS, Framer Motion
-*   **Backend**: Rust (Tauri), Grammers (Telegram Client)
-*   **Build Tool**: Vite
+```text
+Telegram-Drive/
+|-- app/                  # Tauri, React, and Rust application
+|   |-- src/              # React frontend
+|   |-- src-tauri/        # Rust/Tauri backend
+|   |-- package.json      # npm scripts and frontend dependencies
+|   `-- vite.config.ts    # Vite development config
+|-- screenshots/          # README images
+`-- README.md
+```
 
+## Requirements
 
-##  Getting Started
+Install these before running the project.
 
-### Prerequisites
+### 1. Node.js
 
-*   **Node.js (v18+)**: [Download here](https://nodejs.org/)
-*   **Rust (latest stable)**: Required to compile the Tauri backend. Install via [rustup](https://rustup.rs/):
-    *   **macOS/Linux:** `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
-    *   **Windows:** Download and run `rustup-init.exe` from [rustup.rs](https://rustup.rs/)
-    *   *Verify installation:* run `rustc --version` and `cargo --version` in your terminal.
-*   **OS-Specific Build Tools for Tauri**: 
-    *   **macOS:** Xcode Command Line Tools (`xcode-select --install`).
-    *   **Linux (Ubuntu/Debian):** `sudo apt update && sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev`
-    *   **Windows (CRITICAL):** You **must** install the [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/). During installation, select the **"Desktop development with C++"** workload. Without this, you will get a `linker 'link.exe' not found` error.
-    *   **Windows (WebView2):** Windows 10/11 users usually have this pre-installed. If not, download the [WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/#download-section).
-    *   *Reference:* See the official [Tauri v2 Prerequisites Guide](https://v2.tauri.app/start/prerequisites/) for detailed instructions.
-*   **Telegram API Credentials**: You need your own API ID and API Hash to communicate with Telegram's servers.
-    1. Log into [my.telegram.org](https://my.telegram.org).
-    2. Go to "API development tools" and create a new application to get your `api_id` and `api_hash`.
+Install Node.js 18 or newer.
 
-> [!NOTE]  
-> **First-run Compile Time:** The initial build (`npm run tauri dev` or `npm run tauri build`) will download and compile over 300 Rust crates. This process can take **5 to 15 minutes** depending on your hardware. Subsequent builds will be much faster.
+- Download: https://nodejs.org/
+- Verify:
 
-> [!TIP]
-> **NPM Vulnerabilities:** You may see vulnerability warnings during `npm install`. These are usually related to build tools and dev dependencies. You can optionally run `npm audit fix`, but it is not strictly required to run the app.
+```bash
+node --version
+npm --version
+```
 
-### Installation
+### 2. Rust and Cargo
 
-1.  **Clone the repository**
-    ```bash
-    git clone https://github.com/caamer20/Telegram-Drive.git
-    cd Telegram-Drive
-    ```
+Tauri needs Rust and Cargo to compile the desktop backend.
 
-2.  **Install Dependencies**
-    ```bash
-    cd app
-    npm install
-    ```
+#### Windows
 
-3.  **Run in Development Mode**
-    ```bash
-    npm run tauri dev
-    ```
+Install Rustup:
 
-4.  **Build/Compile**
-    ```bash
-    npm run tauri build
-    ```
+```powershell
+winget install --id Rustlang.Rustup -e
+```
 
-##  Open Source & License
+Or download `rustup-init.exe` from https://rustup.rs/.
 
-This project is **Free and Open Source Software**. You are free to use, modify, and distribute it.
+After installing Rust, close your terminal and open a new one. Then verify:
 
-Licensed under the **MIT License**.
+```powershell
+rustc --version
+cargo --version
+```
 
----
-*Disclaimer: This application is not affiliated with Telegram FZ-LLC. Use responsibly and in accordance with Telegram's Terms of Service.*
+If `cargo` is still not found, make sure this folder is in your PATH:
 
-If you're looking for a version of this app that's optimized for VPNs check out this repo:
+```text
+%USERPROFILE%\.cargo\bin
+```
+
+#### macOS and Linux
+
+Install Rustup:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+Restart your terminal, then verify:
+
+```bash
+rustc --version
+cargo --version
+```
+
+### 3. Tauri System Dependencies
+
+Tauri also needs native build tools for your operating system.
+
+#### Windows
+
+Install Visual Studio Build Tools:
+
+https://visualstudio.microsoft.com/visual-cpp-build-tools/
+
+During installation, select:
+
+- Desktop development with C++
+- MSVC build tools
+- Windows SDK
+
+Windows 10 and Windows 11 usually already include WebView2. If the app complains about WebView2, install the WebView2 Runtime:
+
+https://developer.microsoft.com/en-us/microsoft-edge/webview2/
+
+#### macOS
+
+Install Xcode Command Line Tools:
+
+```bash
+xcode-select --install
+```
+
+#### Ubuntu/Debian Linux
+
+Install Tauri's Linux dependencies:
+
+```bash
+sudo apt update
+sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+```
+
+For other Linux distributions, check the Tauri v2 prerequisites guide:
+
+https://v2.tauri.app/start/prerequisites/
+
+### 4. Telegram API Credentials
+
+You need your own Telegram API ID and API hash.
+
+1. Go to https://my.telegram.org/.
+2. Log in with your Telegram account.
+3. Open API development tools.
+4. Create an application.
+5. Save the `api_id` and `api_hash`.
+6. Enter them in Telegram Drive when the app asks for them.
+
+## Run the Project
+
+### 1. Clone the Repository
+
+```bash
+git clone https://github.com/caamer20/Telegram-Drive.git
+cd Telegram-Drive
+```
+
+### 2. Install App Dependencies
+
+```bash
+cd app
+npm install
+```
+
+### 3. Start the Desktop App in Development Mode
+
+```bash
+npm run tauri dev
+```
+
+The first run can take several minutes because Cargo downloads and compiles the Rust dependencies. Later runs are faster.
+
+This command starts the Vite frontend and opens the Tauri desktop window.
+
+## Build the App
+
+From the `app` folder, run:
+
+```bash
+npm run tauri build
+```
+
+The built installer or application bundle will be created inside:
+
+```text
+app/src-tauri/target/release/bundle/
+```
+
+## Useful Commands
+
+Run these from the `app` folder.
+
+```bash
+npm run dev
+```
+
+Starts only the Vite frontend. This is useful for frontend-only work, but it does not run the full desktop app.
+
+```bash
+npm run build
+```
+
+Builds the frontend with TypeScript and Vite.
+
+```bash
+npm run tauri dev
+```
+
+Runs the full Tauri desktop app in development mode.
+
+```bash
+npm run tauri build
+```
+
+Builds the production desktop app.
+
+## Troubleshooting
+
+### `cargo metadata` or `program not found`
+
+This means Cargo is not installed or not available in your terminal PATH.
+
+Fix:
+
+1. Install Rustup.
+2. Close the terminal.
+3. Open a new terminal.
+4. Run:
+
+```bash
+cargo --version
+```
+
+Then try again:
+
+```bash
+npm run tauri dev
+```
+
+### `link.exe not found` on Windows
+
+Install Visual Studio Build Tools and select the Desktop development with C++ workload.
+
+### WebView2 Error on Windows
+
+Install the Microsoft Edge WebView2 Runtime:
+
+https://developer.microsoft.com/en-us/microsoft-edge/webview2/
+
+### First Run Is Slow
+
+That is normal. The first Tauri run downloads and compiles Rust crates. It can take 5 to 15 minutes depending on your computer and internet connection.
+
+### npm Audit Warnings
+
+You may see npm vulnerability warnings after `npm install`. They usually come from development dependencies. They do not necessarily stop the app from running.
+
+## Tech Stack
+
+- React
+- TypeScript
+- Vite
+- Tauri v2
+- Rust
+- Grammers Telegram client
+- Tailwind CSS
+- Framer Motion
+
+## License
+
+This project is released under the MIT License.
+
+## Disclaimer
+
+This application is not affiliated with Telegram FZ-LLC. Use it responsibly and follow Telegram's Terms of Service.
+
+## Related Project
+
+For a VPN-optimized version, see:
+
 https://github.com/caamer20/Telegram-Drive-ForVPNs
-
-<div align="center">
-  <!-- PayPal -->
-  <div style="margin: 15px 0;">
-    <a href="https://www.paypal.me/Caamer20">
-      <img src="https://raw.githubusercontent.com/stefan-niedermann/paypal-donate-button/master/paypal-donate-button.png" alt="Donate with PayPal" width="200">
-    </a>
-    <div style="font-size: 14px; margin-top: 8px;">paypal.me/Caamer20</div>
-  </div>
-
-  <!-- Litecoin -->
-  <div style="margin: 15px 0;">
-    <a href="litecoin:ltc1q6wkr5ac4u0pxx4hx7xgwn0gsaku25ws0df73rp">
-      <img src="https://img.shields.io/badge/Donate-LTC-345D9D?style=for-the-badge&logo=litecoin&logoColor=white" alt="Donate LTC">
-    </a>
-    <div style="font-family: monospace; font-size: 13px; margin-top: 8px; word-break: break-all;">
-      ltc1q6wkr5ac4u0pxx4hx7xgwn0gsaku25ws0df73rp
-    </div>
-  </div>
-
-  <!-- Bitcoin -->
-  <div style="margin: 15px 0;">
-    <a href="bitcoin:bc1q5pt7m2fk6w0dzsnf6vvd5k6nw5k44785286ujy">
-      <img src="https://img.shields.io/badge/Donate-BTC-F7931A?style=for-the-badge&logo=bitcoin&logoColor=white" alt="Donate BTC">
-    </a>
-    <div style="font-family: monospace; font-size: 13px; margin-top: 8px; word-break: break-all;">
-      bc1q5pt7m2fk6w0dzsnf6vvd5k6nw5k44785286ujy
-    </div>
-  </div>
-</div>
