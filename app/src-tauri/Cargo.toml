@@ -43,4 +43,12 @@ async-stream = "0.3"
 actix-rt = "2"
 tauri-plugin-process = "2.3.1"
 rand = "0.8"
-
+argon2 = "0.5"
+jsonwebtoken = "9"
+uuid = { version = "1", features = ["v4", "serde"] }
+time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
+sha2 = "0.10"
+hex = "0.4"
+once_cell = "1"
+aes-gcm-siv = "0.11"
+sqlite = "0.37"

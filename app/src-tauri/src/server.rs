@@ -1,10 +1,8 @@
 use actix_web::{get, web, App, HttpServer, HttpResponse, Responder};
 use actix_cors::Cors;
-use crate::commands::TelegramState;
 use crate::commands::utils::resolve_peer;
 use grammers_client::types::Media;
-
-use std::sync::Arc;
+use crate::nas::{api::configure_api, state::NasState};
 
 /// Holds the per-session streaming token for Actix validation
 pub struct StreamTokenData {
@@ -20,7 +18,7 @@ struct StreamQuery {
 async fn stream_media(
     path: web::Path<(String, i32)>,
     query: web::Query<StreamQuery>,
-    data: web::Data<Arc<TelegramState>>,
+    data: web::Data<NasState>,
     token_data: web::Data<StreamTokenData>,
 ) -> impl Responder {
     let (folder_id_str, message_id) = path.into_inner();
@@ -54,12 +52,12 @@ async fn stream_media(
     };
 
     let client_opt = {
-        data.client.lock().await.clone()
+        data.telegram.client.lock().await.clone()
     };
 
     if let Some(client) = client_opt {
         log::debug!("Stream request: Client acquired, resolving peer for msg {}...", message_id);
-        match resolve_peer(&client, folder_id, &data.peer_cache).await {
+        match resolve_peer(&client, folder_id, &data.telegram.peer_cache).await {
             Ok(peer) => {
                 log::debug!("Stream request: Peer resolved, fetching message {}...", message_id);
                 // Try to fetch message efficiently
@@ -137,7 +135,7 @@ fn mime_type_from_media(media: &Media) -> String {
     }
 }
 
-pub async fn start_server(state: Arc<TelegramState>, port: u16, token: String) -> std::io::Result<actix_web::dev::Server> {
+pub async fn start_server(state: NasState, port: u16, token: String) -> std::io::Result<actix_web::dev::Server> {
     let state_data = web::Data::new(state);
     let token_data = web::Data::new(StreamTokenData { token });
     
@@ -146,8 +144,11 @@ pub async fn start_server(state: Arc<TelegramState>, port: u16, token: String) -
     let server = HttpServer::new(move || {
         let cors = Cors::default()
             .allowed_origin("tauri://localhost")
+            .allowed_origin("http://tauri.localhost")
             .allowed_origin("http://localhost:1420")
             .allowed_origin("https://tauri.localhost")
+            .allowed_origin("http://127.0.0.1:1420")
+            .supports_credentials()
             .allow_any_method()
             .allow_any_header();
 
@@ -155,12 +156,13 @@ pub async fn start_server(state: Arc<TelegramState>, port: u16, token: String) -
             .wrap(cors)
             .app_data(state_data.clone())
             .app_data(token_data.clone())
+            .configure(configure_api)
             .service(stream_media)
     })
-    .bind(("127.0.0.1", port))?
+    .bind(("0.0.0.0", port))?
     .run();
 
-    log::info!("Streaming Server started successfully on http://127.0.0.1:{}", port);
+    log::info!("Telegram NAS API started successfully on http://0.0.0.0:{}", port);
 
     Ok(server)
 }
