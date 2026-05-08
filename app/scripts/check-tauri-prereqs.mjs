@@ -1,9 +1,17 @@
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import process from "node:process";
+
+const cargoBinDir = process.platform === "win32" && process.env.USERPROFILE
+  ? `${process.env.USERPROFILE}\\.cargo\\bin`
+  : "";
 
 function hasCommand(command, args = ["--version"]) {
   const result = spawnSync(command, args, {
     encoding: "utf8",
+    env: cargoBinDir
+      ? { ...process.env, PATH: `${cargoBinDir}${process.env.PATH ? `;${process.env.PATH}` : ""}` }
+      : process.env,
     shell: process.platform === "win32",
     stdio: "pipe",
   });
@@ -11,7 +19,10 @@ function hasCommand(command, args = ["--version"]) {
   return result.status === 0;
 }
 
-if (!hasCommand("cargo")) {
+const hasCargo = hasCommand("cargo")
+  || (cargoBinDir && existsSync(`${cargoBinDir}\\cargo.exe`));
+
+if (!hasCargo) {
   const isWindows = process.platform === "win32";
 
   console.error("\nMissing Rust/Cargo.");

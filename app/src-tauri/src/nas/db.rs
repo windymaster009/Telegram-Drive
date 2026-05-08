@@ -62,6 +62,7 @@ impl Database {
                   id TEXT PRIMARY KEY,
                   username TEXT NOT NULL UNIQUE,
                   display_name TEXT NOT NULL,
+                  telegram_username TEXT,
                   password_hash TEXT NOT NULL,
                   role_id TEXT NOT NULL REFERENCES roles(id),
                   disabled INTEGER NOT NULL DEFAULT 0,
@@ -86,6 +87,8 @@ impl Database {
                   expires_at INTEGER NOT NULL,
                   max_uses INTEGER NOT NULL DEFAULT 1,
                   current_uses INTEGER NOT NULL DEFAULT 0,
+                  require_approval INTEGER NOT NULL DEFAULT 0,
+                  approved_at INTEGER,
                   revoked_at INTEGER,
                   created_at INTEGER NOT NULL,
                   created_by TEXT REFERENCES users(id),
@@ -125,6 +128,24 @@ impl Database {
                 "#,
             )
             .map_err(|err| err.to_string())?;
+            add_column_if_missing(
+                &conn,
+                "users",
+                "telegram_username",
+                "ALTER TABLE users ADD COLUMN telegram_username TEXT",
+            )?;
+            add_column_if_missing(
+                &conn,
+                "qr_tokens",
+                "require_approval",
+                "ALTER TABLE qr_tokens ADD COLUMN require_approval INTEGER NOT NULL DEFAULT 0",
+            )?;
+            add_column_if_missing(
+                &conn,
+                "qr_tokens",
+                "approved_at",
+                "ALTER TABLE qr_tokens ADD COLUMN approved_at INTEGER",
+            )?;
 
             execute_bind3(
                 &conn,
@@ -166,6 +187,7 @@ impl Database {
         &self,
         username: String,
         display_name: String,
+        telegram_username: Option<String>,
         password_hash: String,
         role: AppRole,
         disabled: bool,
@@ -176,24 +198,26 @@ impl Database {
                 id: Uuid::new_v4().to_string(),
                 username,
                 display_name,
+                telegram_username,
                 role: role.clone(),
                 disabled,
                 created_at: now,
             };
             let mut statement = conn
                 .prepare(
-                    "INSERT INTO users (id, username, display_name, password_hash, role_id, disabled, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    "INSERT INTO users (id, username, display_name, telegram_username, password_hash, role_id, disabled, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 )
                 .map_err(|err| err.to_string())?;
             statement.bind((1, user.id.as_str())).map_err(|err| err.to_string())?;
             statement.bind((2, user.username.as_str())).map_err(|err| err.to_string())?;
             statement.bind((3, user.display_name.as_str())).map_err(|err| err.to_string())?;
-            statement.bind((4, password_hash.as_str())).map_err(|err| err.to_string())?;
-            statement.bind((5, role.as_str())).map_err(|err| err.to_string())?;
-            statement.bind((6, if user.disabled { 1 } else { 0 })).map_err(|err| err.to_string())?;
-            statement.bind((7, user.created_at)).map_err(|err| err.to_string())?;
-            statement.bind((8, now)).map_err(|err| err.to_string())?;
+            bind_optional_string(&mut statement, 4, user.telegram_username.as_ref())?;
+            statement.bind((5, password_hash.as_str())).map_err(|err| err.to_string())?;
+            statement.bind((6, role.as_str())).map_err(|err| err.to_string())?;
+            statement.bind((7, if user.disabled { 1 } else { 0 })).map_err(|err| err.to_string())?;
+            statement.bind((8, user.created_at)).map_err(|err| err.to_string())?;
+            statement.bind((9, now)).map_err(|err| err.to_string())?;
             statement.next().map_err(|err| err.to_string())?;
             Ok(user)
         })
@@ -204,7 +228,7 @@ impl Database {
         self.with_conn(|conn| {
             let mut statement = conn
                 .prepare(
-                    "SELECT id, username, display_name, role_id, disabled, created_at
+                    "SELECT id, username, display_name, telegram_username, role_id, disabled, created_at
                      FROM users ORDER BY created_at ASC",
                 )
                 .map_err(|err| err.to_string())?;
@@ -214,9 +238,10 @@ impl Database {
                     id: statement.read::<String, _>(0).map_err(|err| err.to_string())?,
                     username: statement.read::<String, _>(1).map_err(|err| err.to_string())?,
                     display_name: statement.read::<String, _>(2).map_err(|err| err.to_string())?,
-                    role: AppRole::from(statement.read::<String, _>(3).map_err(|err| err.to_string())?),
-                    disabled: statement.read::<i64, _>(4).map_err(|err| err.to_string())? != 0,
-                    created_at: statement.read::<i64, _>(5).map_err(|err| err.to_string())?,
+                    telegram_username: statement.read::<Option<String>, _>(3).map_err(|err| err.to_string())?,
+                    role: AppRole::from(statement.read::<String, _>(4).map_err(|err| err.to_string())?),
+                    disabled: statement.read::<i64, _>(5).map_err(|err| err.to_string())? != 0,
+                    created_at: statement.read::<i64, _>(6).map_err(|err| err.to_string())?,
                 });
             }
             Ok(users)
@@ -231,7 +256,7 @@ impl Database {
         self.with_conn(move |conn| {
             let mut statement = conn
                 .prepare(
-                    "SELECT id, username, display_name, role_id, disabled, created_at, password_hash
+                    "SELECT id, username, display_name, telegram_username, role_id, disabled, created_at, password_hash
                      FROM users WHERE username = ?1",
                 )
                 .map_err(|err| err.to_string())?;
@@ -242,11 +267,12 @@ impl Database {
                         id: statement.read::<String, _>(0).map_err(|err| err.to_string())?,
                         username: statement.read::<String, _>(1).map_err(|err| err.to_string())?,
                         display_name: statement.read::<String, _>(2).map_err(|err| err.to_string())?,
-                        role: AppRole::from(statement.read::<String, _>(3).map_err(|err| err.to_string())?),
-                        disabled: statement.read::<i64, _>(4).map_err(|err| err.to_string())? != 0,
-                        created_at: statement.read::<i64, _>(5).map_err(|err| err.to_string())?,
+                        telegram_username: statement.read::<Option<String>, _>(3).map_err(|err| err.to_string())?,
+                        role: AppRole::from(statement.read::<String, _>(4).map_err(|err| err.to_string())?),
+                        disabled: statement.read::<i64, _>(5).map_err(|err| err.to_string())? != 0,
+                        created_at: statement.read::<i64, _>(6).map_err(|err| err.to_string())?,
                     },
-                    statement.read::<String, _>(6).map_err(|err| err.to_string())?,
+                    statement.read::<String, _>(7).map_err(|err| err.to_string())?,
                 ))),
                 State::Done => Ok(None),
             }
@@ -258,7 +284,7 @@ impl Database {
         self.with_conn(move |conn| {
             let mut statement = conn
                 .prepare(
-                    "SELECT id, username, display_name, role_id, disabled, created_at
+                    "SELECT id, username, display_name, telegram_username, role_id, disabled, created_at
                      FROM users WHERE id = ?1",
                 )
                 .map_err(|err| err.to_string())?;
@@ -268,9 +294,42 @@ impl Database {
                     id: statement.read::<String, _>(0).map_err(|err| err.to_string())?,
                     username: statement.read::<String, _>(1).map_err(|err| err.to_string())?,
                     display_name: statement.read::<String, _>(2).map_err(|err| err.to_string())?,
-                    role: AppRole::from(statement.read::<String, _>(3).map_err(|err| err.to_string())?),
-                    disabled: statement.read::<i64, _>(4).map_err(|err| err.to_string())? != 0,
-                    created_at: statement.read::<i64, _>(5).map_err(|err| err.to_string())?,
+                    telegram_username: statement.read::<Option<String>, _>(3).map_err(|err| err.to_string())?,
+                    role: AppRole::from(statement.read::<String, _>(4).map_err(|err| err.to_string())?),
+                    disabled: statement.read::<i64, _>(5).map_err(|err| err.to_string())? != 0,
+                    created_at: statement.read::<i64, _>(6).map_err(|err| err.to_string())?,
+                })),
+                State::Done => Ok(None),
+            }
+        })
+        .await
+    }
+
+    pub async fn get_user_by_login_identifier(
+        &self,
+        identifier: String,
+    ) -> Result<Option<AppUser>, String> {
+        self.with_conn(move |conn| {
+            let normalized = identifier.trim().trim_start_matches('@').to_lowercase();
+            let telegram = format!("@{}", normalized);
+            let mut statement = conn
+                .prepare(
+                    "SELECT id, username, display_name, telegram_username, role_id, disabled, created_at
+                     FROM users
+                     WHERE lower(username) = ?1 OR lower(telegram_username) = ?2",
+                )
+                .map_err(|err| err.to_string())?;
+            statement.bind((1, normalized.as_str())).map_err(|err| err.to_string())?;
+            statement.bind((2, telegram.as_str())).map_err(|err| err.to_string())?;
+            match statement.next().map_err(|err| err.to_string())? {
+                State::Row => Ok(Some(AppUser {
+                    id: statement.read::<String, _>(0).map_err(|err| err.to_string())?,
+                    username: statement.read::<String, _>(1).map_err(|err| err.to_string())?,
+                    display_name: statement.read::<String, _>(2).map_err(|err| err.to_string())?,
+                    telegram_username: statement.read::<Option<String>, _>(3).map_err(|err| err.to_string())?,
+                    role: AppRole::from(statement.read::<String, _>(4).map_err(|err| err.to_string())?),
+                    disabled: statement.read::<i64, _>(5).map_err(|err| err.to_string())? != 0,
+                    created_at: statement.read::<i64, _>(6).map_err(|err| err.to_string())?,
                 })),
                 State::Done => Ok(None),
             }
@@ -282,32 +341,36 @@ impl Database {
         &self,
         user_id: String,
         display_name: Option<String>,
+        telegram_username: Option<String>,
         disabled: Option<bool>,
         role: Option<AppRole>,
         password_hash: Option<String>,
     ) -> Result<(), String> {
         self.with_conn(move |conn| {
             let mut lookup = conn
-                .prepare("SELECT display_name, disabled, role_id FROM users WHERE id = ?1")
+                .prepare("SELECT display_name, telegram_username, disabled, role_id FROM users WHERE id = ?1")
                 .map_err(|err| err.to_string())?;
             lookup.bind((1, user_id.as_str())).map_err(|err| err.to_string())?;
-            let (current_name, current_disabled, current_role) = match lookup.next().map_err(|err| err.to_string())? {
+            let (current_name, current_telegram_username, current_disabled, current_role) = match lookup.next().map_err(|err| err.to_string())? {
                 State::Row => (
                     lookup.read::<String, _>(0).map_err(|err| err.to_string())?,
-                    lookup.read::<i64, _>(1).map_err(|err| err.to_string())? != 0,
-                    lookup.read::<String, _>(2).map_err(|err| err.to_string())?,
+                    lookup.read::<Option<String>, _>(1).map_err(|err| err.to_string())?,
+                    lookup.read::<i64, _>(2).map_err(|err| err.to_string())? != 0,
+                    lookup.read::<String, _>(3).map_err(|err| err.to_string())?,
                 ),
                 State::Done => return Err("User not found".to_string()),
             };
 
             let mut update = conn
-                .prepare("UPDATE users SET display_name = ?2, disabled = ?3, role_id = ?4, updated_at = ?5 WHERE id = ?1")
+                .prepare("UPDATE users SET display_name = ?2, telegram_username = ?3, disabled = ?4, role_id = ?5, updated_at = ?6 WHERE id = ?1")
                 .map_err(|err| err.to_string())?;
             update.bind((1, user_id.as_str())).map_err(|err| err.to_string())?;
             update.bind((2, display_name.unwrap_or(current_name).as_str())).map_err(|err| err.to_string())?;
-            update.bind((3, if disabled.unwrap_or(current_disabled) { 1 } else { 0 })).map_err(|err| err.to_string())?;
-            update.bind((4, role.unwrap_or(AppRole::from(current_role)).as_str())).map_err(|err| err.to_string())?;
-            update.bind((5, crate::nas::crypto::now_ts())).map_err(|err| err.to_string())?;
+            let next_telegram_username = telegram_username.or(current_telegram_username);
+            bind_optional_string(&mut update, 3, next_telegram_username.as_ref())?;
+            update.bind((4, if disabled.unwrap_or(current_disabled) { 1 } else { 0 })).map_err(|err| err.to_string())?;
+            update.bind((5, role.unwrap_or(AppRole::from(current_role)).as_str())).map_err(|err| err.to_string())?;
+            update.bind((6, crate::nas::crypto::now_ts())).map_err(|err| err.to_string())?;
             update.next().map_err(|err| err.to_string())?;
 
             if let Some(password_hash) = password_hash {
@@ -473,21 +536,23 @@ impl Database {
         token_hash: String,
         created_by: String,
         expires_at: i64,
+        require_approval: bool,
     ) -> Result<(), String> {
         self.with_conn(move |conn| {
             let qr_id = Uuid::new_v4().to_string();
             let mut statement = conn
                 .prepare(
-                    "INSERT INTO qr_tokens (id, user_id, token_hash, expires_at, created_at, created_by)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    "INSERT INTO qr_tokens (id, user_id, token_hash, expires_at, require_approval, created_at, created_by)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 )
                 .map_err(|err| err.to_string())?;
             statement.bind((1, qr_id.as_str())).map_err(|err| err.to_string())?;
             statement.bind((2, user_id.as_str())).map_err(|err| err.to_string())?;
             statement.bind((3, token_hash.as_str())).map_err(|err| err.to_string())?;
             statement.bind((4, expires_at)).map_err(|err| err.to_string())?;
-            statement.bind((5, crate::nas::crypto::now_ts())).map_err(|err| err.to_string())?;
-            statement.bind((6, created_by.as_str())).map_err(|err| err.to_string())?;
+            statement.bind((5, if require_approval { 1 } else { 0 })).map_err(|err| err.to_string())?;
+            statement.bind((6, crate::nas::crypto::now_ts())).map_err(|err| err.to_string())?;
+            statement.bind((7, created_by.as_str())).map_err(|err| err.to_string())?;
             statement.next().map_err(|err| err.to_string())?;
             Ok(())
         })
@@ -511,23 +576,29 @@ impl Database {
         self.with_conn(move |conn| {
             let mut lookup = conn
                 .prepare(
-                    "SELECT user_id, expires_at, max_uses, current_uses, revoked_at
+                    "SELECT user_id, expires_at, max_uses, current_uses, revoked_at, require_approval, approved_at
                      FROM qr_tokens WHERE token_hash = ?1",
                 )
                 .map_err(|err| err.to_string())?;
             lookup.bind((1, token_hash.as_str())).map_err(|err| err.to_string())?;
-            let (user_id, expires_at, max_uses, current_uses, revoked_at) = match lookup.next().map_err(|err| err.to_string())? {
+            let (user_id, expires_at, max_uses, current_uses, revoked_at, require_approval, approved_at) = match lookup.next().map_err(|err| err.to_string())? {
                 State::Row => (
                     lookup.read::<String, _>(0).map_err(|err| err.to_string())?,
                     lookup.read::<i64, _>(1).map_err(|err| err.to_string())?,
                     lookup.read::<i64, _>(2).map_err(|err| err.to_string())?,
                     lookup.read::<i64, _>(3).map_err(|err| err.to_string())?,
                     lookup.read::<Option<i64>, _>(4).map_err(|err| err.to_string())?,
+                    lookup.read::<i64, _>(5).map_err(|err| err.to_string())? != 0,
+                    lookup.read::<Option<i64>, _>(6).map_err(|err| err.to_string())?,
                 ),
                 State::Done => return Ok(None),
             };
 
-            if revoked_at.is_some() || expires_at < crate::nas::crypto::now_ts() || current_uses >= max_uses {
+            if revoked_at.is_some()
+                || expires_at < crate::nas::crypto::now_ts()
+                || current_uses >= max_uses
+                || (require_approval && approved_at.is_none())
+            {
                 return Ok(None);
             }
 
@@ -541,6 +612,52 @@ impl Database {
             let user = get_user(&conn, &user_id)?.ok_or("User not found")?;
             let permissions = load_permissions(&conn, &user_id)?;
             Ok(Some(QrRedemption { user, permissions }))
+        })
+        .await
+    }
+
+    pub async fn approve_qr_token(&self, token_hash: String) -> Result<bool, String> {
+        self.with_conn(move |conn| {
+            let now = crate::nas::crypto::now_ts();
+            let mut statement = conn
+                .prepare(
+                    "UPDATE qr_tokens
+                     SET approved_at = ?2
+                     WHERE token_hash = ?1
+                       AND revoked_at IS NULL
+                       AND approved_at IS NULL
+                       AND expires_at >= ?2
+                       AND current_uses < max_uses",
+                )
+                .map_err(|err| err.to_string())?;
+            statement.bind((1, token_hash.as_str())).map_err(|err| err.to_string())?;
+            statement.bind((2, now)).map_err(|err| err.to_string())?;
+            statement.next().map_err(|err| err.to_string())?;
+            Ok(conn.change_count() > 0)
+        })
+        .await
+    }
+
+    pub async fn get_qr_status(&self, token_hash: String) -> Result<Option<(bool, bool)>, String> {
+        self.with_conn(move |conn| {
+            let mut statement = conn
+                .prepare("SELECT approved_at, expires_at, revoked_at, current_uses, max_uses FROM qr_tokens WHERE token_hash = ?1")
+                .map_err(|err| err.to_string())?;
+            statement.bind((1, token_hash.as_str())).map_err(|err| err.to_string())?;
+            match statement.next().map_err(|err| err.to_string())? {
+                State::Row => {
+                    let approved_at = statement.read::<Option<i64>, _>(0).map_err(|err| err.to_string())?;
+                    let expires_at = statement.read::<i64, _>(1).map_err(|err| err.to_string())?;
+                    let revoked_at = statement.read::<Option<i64>, _>(2).map_err(|err| err.to_string())?;
+                    let current_uses = statement.read::<i64, _>(3).map_err(|err| err.to_string())?;
+                    let max_uses = statement.read::<i64, _>(4).map_err(|err| err.to_string())?;
+                    let expired = revoked_at.is_some()
+                        || expires_at < crate::nas::crypto::now_ts()
+                        || current_uses >= max_uses;
+                    Ok(Some((approved_at.is_some(), expired)))
+                }
+                State::Done => Ok(None),
+            }
         })
         .await
     }
@@ -679,7 +796,7 @@ impl Database {
 fn get_user(conn: &Connection, user_id: &str) -> Result<Option<AppUser>, String> {
     let mut statement = conn
         .prepare(
-            "SELECT id, username, display_name, role_id, disabled, created_at
+            "SELECT id, username, display_name, telegram_username, role_id, disabled, created_at
              FROM users WHERE id = ?1",
         )
         .map_err(|err| err.to_string())?;
@@ -689,9 +806,10 @@ fn get_user(conn: &Connection, user_id: &str) -> Result<Option<AppUser>, String>
             id: statement.read::<String, _>(0).map_err(|err| err.to_string())?,
             username: statement.read::<String, _>(1).map_err(|err| err.to_string())?,
             display_name: statement.read::<String, _>(2).map_err(|err| err.to_string())?,
-            role: AppRole::from(statement.read::<String, _>(3).map_err(|err| err.to_string())?),
-            disabled: statement.read::<i64, _>(4).map_err(|err| err.to_string())? != 0,
-            created_at: statement.read::<i64, _>(5).map_err(|err| err.to_string())?,
+            telegram_username: statement.read::<Option<String>, _>(3).map_err(|err| err.to_string())?,
+            role: AppRole::from(statement.read::<String, _>(4).map_err(|err| err.to_string())?),
+            disabled: statement.read::<i64, _>(5).map_err(|err| err.to_string())? != 0,
+            created_at: statement.read::<i64, _>(6).map_err(|err| err.to_string())?,
         })),
         State::Done => Ok(None),
     }
@@ -724,4 +842,37 @@ fn execute_bind3(conn: &Connection, sql: &str, a: &str, b: &str, c: &str) -> Res
     statement.bind((3, c)).map_err(|err| err.to_string())?;
     statement.next().map_err(|err| err.to_string())?;
     Ok(())
+}
+
+fn add_column_if_missing(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    alter_sql: &str,
+) -> Result<(), String> {
+    let mut statement = conn
+        .prepare(format!("PRAGMA table_info({})", table))
+        .map_err(|err| err.to_string())?;
+    while let State::Row = statement.next().map_err(|err| err.to_string())? {
+        let name = statement.read::<String, _>(1).map_err(|err| err.to_string())?;
+        if name == column {
+            return Ok(());
+        }
+    }
+    conn.execute(alter_sql).map_err(|err| err.to_string())
+}
+
+fn bind_optional_string(
+    statement: &mut sqlite::Statement<'_>,
+    index: usize,
+    value: Option<&String>,
+) -> Result<(), String> {
+    match value {
+        Some(value) if !value.is_empty() => statement
+            .bind((index, value.as_str()))
+            .map_err(|err| err.to_string()),
+        _ => statement
+            .bind((index, sqlite::Value::Null))
+            .map_err(|err| err.to_string()),
+    }
 }

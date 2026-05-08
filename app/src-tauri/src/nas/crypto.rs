@@ -9,6 +9,7 @@ use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation}
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 use std::fs;
+#[cfg(target_family = "unix")]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use time::OffsetDateTime;

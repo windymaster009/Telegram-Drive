@@ -12,6 +12,7 @@ export interface AppUser {
   id: string;
   username: string;
   display_name: string;
+  telegram_username?: string | null;
   role: AppRole;
   disabled: boolean;
   created_at: number;

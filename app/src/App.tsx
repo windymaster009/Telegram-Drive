@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { QRCodeSVG } from "qrcode.react";
-import { Shield, UserPlus, Users, History, KeyRound, ScanQrCode, HardDrive, LogOut } from "lucide-react";
+import { Copy, Shield, UserPlus, Users, History, KeyRound, ScanQrCode, HardDrive, LogOut } from "lucide-react";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Dashboard } from "./components/Dashboard";
 import { UpdateBanner } from "./components/UpdateBanner";
@@ -193,6 +193,11 @@ function LoginPage({
 }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [showQrLogin, setShowQrLogin] = useState(Boolean(qrToken));
+  const [qrInput, setQrInput] = useState(qrToken || "");
+  const [qrIdentifier, setQrIdentifier] = useState("");
+  const [publicQr, setPublicQr] = useState<QrTokenResponse | null>(null);
+  const [lanIp, setLanIp] = useState("");
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (event: FormEvent) => {
@@ -208,6 +213,76 @@ function LoginPage({
       setLoading(false);
     }
   };
+
+  const redeemQrInput = async () => {
+    const token = extractQrToken(qrInput);
+    if (!token) {
+      toast.error("Paste a QR token or login link first");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const response = await nasApi.redeemQr(token);
+      onLoggedIn(response);
+      toast.success("QR login complete");
+    } catch (error) {
+      toast.error((error as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const requestPublicQr = async () => {
+    if (!qrIdentifier.trim()) {
+      toast.error("Enter your app username or Telegram username first");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const response = await nasApi.requestQr({ identifier: qrIdentifier });
+      setPublicQr(response);
+      setQrInput(response.token);
+      toast.success("QR ready to scan");
+    } catch (error) {
+      toast.error((error as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    invoke<string>("cmd_get_lan_ip")
+      .then(setLanIp)
+      .catch(() => setLanIp(""));
+  }, []);
+
+  useEffect(() => {
+    if (!publicQr) return;
+
+    const timer = window.setInterval(async () => {
+      try {
+        const status = await nasApi.qrStatus(publicQr.token);
+        if (status.expired) {
+          window.clearInterval(timer);
+          setPublicQr(null);
+          toast.error("QR expired. Generate a new one.");
+          return;
+        }
+        if (status.approved) {
+          window.clearInterval(timer);
+          const response = await nasApi.redeemQr(publicQr.token);
+          onLoggedIn(response);
+          toast.success("QR login complete");
+        }
+      } catch {
+        // Keep polling until the QR expires or is approved.
+      }
+    }, 2000);
+
+    return () => window.clearInterval(timer);
+  }, [publicQr, onLoggedIn]);
 
   return (
     <div className="flex h-full items-center justify-center p-6">
@@ -229,7 +304,70 @@ function LoginPage({
           <button disabled={loading} className="mt-4 w-full rounded-2xl bg-cyan-400 px-4 py-3 font-medium text-slate-950 transition hover:bg-cyan-300 disabled:opacity-60">
             {loading ? "Signing in..." : "Sign In"}
           </button>
-          {qrToken && <p className="mt-4 text-sm text-cyan-300">A QR token was detected in the URL. The app will try that flow automatically.</p>}
+          <button
+            type="button"
+            onClick={() => setShowQrLogin((value) => !value)}
+            className="mt-3 w-full rounded-2xl border border-white/10 px-4 py-3 text-sm text-slate-200 transition hover:bg-white/8"
+          >
+            <span className="inline-flex items-center justify-center gap-2"><ScanQrCode className="h-4 w-4" /> Login with QR</span>
+          </button>
+          {showQrLogin && (
+            <div className="mt-4 rounded-3xl border border-cyan-300/20 bg-cyan-300/8 p-4">
+              <p className="text-sm font-medium text-white">Scan a QR with your phone</p>
+              <p className="mt-2 text-xs leading-5 text-slate-300">
+                Enter your app username or saved Telegram username, generate a QR, then scan it on your phone to approve this desktop login.
+              </p>
+              <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto]">
+                <input
+                  value={qrIdentifier}
+                  onChange={(event) => setQrIdentifier(event.target.value)}
+                  placeholder="@telegramuser or app username"
+                  className="w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm outline-none transition focus:border-cyan-300/60"
+                />
+                <button
+                  type="button"
+                  onClick={requestPublicQr}
+                  disabled={loading}
+                  className="rounded-2xl bg-cyan-400 px-4 py-3 text-sm font-medium text-slate-950 transition hover:bg-cyan-300 disabled:opacity-60"
+                >
+                  Show QR
+                </button>
+              </div>
+              {publicQr && (
+                <div className="mt-4 rounded-3xl border border-white/10 bg-black/20 p-4">
+                  <div className="flex flex-col items-center gap-3">
+                    <QRCodeSVG value={buildQrApprovalUrl(publicQr.token, lanIp)} size={190} bgColor="#ffffff" fgColor="#020617" />
+                    <p className="text-center text-xs leading-5 text-slate-300">
+                      Waiting for scan. Expires {formatRelativeExpiry(publicQr.expires_at)}.
+                    </p>
+                    {!lanIp && (
+                      <p className="text-center text-xs leading-5 text-amber-200">
+                        Could not detect a LAN IP. If your phone cannot open the QR, paste the token below instead.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+              <p className="mt-4 text-xs leading-5 text-slate-400">Already have an admin-issued QR token or link?</p>
+              <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto]">
+                <input
+                  value={qrInput}
+                  onChange={(event) => setQrInput(event.target.value)}
+                  placeholder="Paste QR token or login link"
+                  className="w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm outline-none transition focus:border-cyan-300/60"
+                />
+                <button
+                  type="button"
+                  onClick={redeemQrInput}
+                  disabled={loading}
+                  className="rounded-2xl bg-cyan-400 px-4 py-3 text-sm font-medium text-slate-950 transition hover:bg-cyan-300 disabled:opacity-60"
+                >
+                  Redeem
+                </button>
+              </div>
+              {qrToken && <p className="mt-3 text-xs text-cyan-200">A QR token was detected in the URL. The app is trying that flow automatically.</p>}
+            </div>
+          )}
         </form>
       </div>
     </div>
@@ -410,10 +548,11 @@ function OwnerTelegramPanel({ csrfToken }: { csrfToken: string | null }) {
 function UsersPanel({ csrfToken }: { csrfToken: string | null }) {
   const client = useQueryClient();
   const users = useQuery({ queryKey: ["admin-users"], queryFn: nasApi.listUsers, retry: false });
-  const [draft, setDraft] = useState<{ username: string; password: string; display_name: string; disabled: boolean; role: "admin" | "user" }>({
+  const [draft, setDraft] = useState<{ username: string; password: string; display_name: string; telegram_username: string; disabled: boolean; role: "admin" | "user" }>({
     username: "",
     password: "",
     display_name: "",
+    telegram_username: "",
     disabled: false,
     role: "user",
   });
@@ -493,7 +632,7 @@ function UsersPanel({ csrfToken }: { csrfToken: string | null }) {
     if (!csrfToken) return;
     try {
       await nasApi.createUser(draft, csrfToken);
-      setDraft({ username: "", password: "", display_name: "", disabled: false, role: "user" });
+      setDraft({ username: "", password: "", display_name: "", telegram_username: "", disabled: false, role: "user" });
       refresh();
       toast.success("User created");
     } catch (error) {
@@ -519,6 +658,7 @@ function UsersPanel({ csrfToken }: { csrfToken: string | null }) {
         <div className="mt-4 space-y-4">
           <Field label="Username" value={draft.username} onChange={(value) => setDraft((prev) => ({ ...prev, username: value }))} />
           <Field label="Display name" value={draft.display_name} onChange={(value) => setDraft((prev) => ({ ...prev, display_name: value }))} />
+          <Field label="Telegram username (optional)" value={draft.telegram_username} onChange={(value) => setDraft((prev) => ({ ...prev, telegram_username: value }))} />
           <Field label="Password" type="password" value={draft.password} onChange={(value) => setDraft((prev) => ({ ...prev, password: value }))} />
           <label className="block text-sm">
             <span className="mb-2 block text-slate-300">Role</span>
@@ -542,6 +682,7 @@ function UsersPanel({ csrfToken }: { csrfToken: string | null }) {
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <p className="font-medium">{user.display_name}</p>
+                    {user.telegram_username && <p className="mt-1 text-xs text-cyan-200">{user.telegram_username}</p>}
                     <p className="text-sm text-slate-300">@{user.username} · {user.role}</p>
                   </div>
                   <span className={`rounded-full px-3 py-1 text-xs ${user.disabled ? "bg-red-500/20 text-red-200" : "bg-emerald-500/20 text-emerald-200"}`}>
@@ -559,6 +700,7 @@ function UsersPanel({ csrfToken }: { csrfToken: string | null }) {
               <div>
                 <p className="text-lg font-semibold">{selectedUser.display_name}</p>
                 <p className="text-sm text-slate-300">@{selectedUser.username}</p>
+                {selectedUser.telegram_username && <p className="mt-1 text-sm text-cyan-200">{selectedUser.telegram_username}</p>}
               </div>
               <div className="flex gap-2">
                 <button
@@ -588,10 +730,27 @@ function UsersPanel({ csrfToken }: { csrfToken: string | null }) {
             {qr && (
               <div className="mt-6 rounded-3xl border border-white/10 bg-white/5 p-5">
                 <div className="flex flex-col gap-4 md:flex-row md:items-center">
-                  <QRCodeSVG value={qr.login_url} size={160} bgColor="transparent" fgColor="#ffffff" />
+                  <QRCodeSVG value={buildQrLoginUrl(qr.token)} size={160} bgColor="#ffffff" fgColor="#020617" />
                   <div className="text-sm text-slate-300">
-                    <p className="font-medium text-white">Provisioning QR</p>
-                    <p className="mt-2 break-all">{qr.login_url}</p>
+                    <p className="font-medium text-white">Login QR for {selectedUser.display_name}</p>
+                    <p className="mt-2">Expires {formatRelativeExpiry(qr.expires_at)}. The QR is single-use and can be revoked.</p>
+                    <p className="mt-2 break-all rounded-2xl border border-white/10 bg-black/20 p-3 text-xs">{buildQrLoginUrl(qr.token)}</p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => navigator.clipboard.writeText(buildQrLoginUrl(qr.token)).then(() => toast.success("QR login link copied"))}
+                        className="rounded-2xl border border-white/10 px-3 py-2 text-xs text-slate-200 transition hover:bg-white/8"
+                      >
+                        <span className="inline-flex items-center gap-2"><Copy className="h-3.5 w-3.5" /> Copy link</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => navigator.clipboard.writeText(qr.token).then(() => toast.success("QR token copied"))}
+                        className="rounded-2xl border border-white/10 px-3 py-2 text-xs text-slate-200 transition hover:bg-white/8"
+                      >
+                        Copy token
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -721,6 +880,38 @@ function UserHome({ me, onLogout }: { me: MeResponse; onLogout: () => void }) {
       allowFolderManagement={false}
     />
   );
+}
+
+function buildQrLoginUrl(token: string) {
+  const url = new URL(window.location.href);
+  url.search = "";
+  url.hash = "";
+  url.searchParams.set("qr", token);
+  return url.toString();
+}
+
+function buildQrApprovalUrl(token: string, lanIp: string) {
+  const host = lanIp || window.location.hostname || "localhost";
+  return `http://${host}:14201/api/auth/qr/approve/${encodeURIComponent(token)}`;
+}
+
+function extractQrToken(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+
+  try {
+    const url = new URL(trimmed);
+    return url.searchParams.get("qr") || trimmed;
+  } catch {
+    return trimmed;
+  }
+}
+
+function formatRelativeExpiry(expiresAt: number) {
+  const seconds = Math.max(0, expiresAt - Math.floor(Date.now() / 1000));
+  const minutes = Math.ceil(seconds / 60);
+  if (minutes <= 1) return "in about 1 minute";
+  return `in about ${minutes} minutes`;
 }
 
 function Feature({

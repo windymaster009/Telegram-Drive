@@ -138,6 +138,7 @@ pub fn run() {
             commands::cmd_search_global,
             commands::cmd_check_connection,
             commands::cmd_is_network_available,
+            commands::cmd_get_lan_ip,
             commands::cmd_clean_cache,
             commands::cmd_get_thumbnail,
             commands::cmd_get_stream_info,

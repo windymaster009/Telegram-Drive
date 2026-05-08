@@ -1,4 +1,4 @@
-use std::net::TcpStream;
+use std::net::{TcpStream, UdpSocket};
 use std::time::Duration;
 
 /// Ultra-lightweight network check
@@ -21,4 +21,18 @@ pub async fn cmd_is_network_available() -> Result<bool, String> {
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn cmd_get_lan_ip() -> Result<String, String> {
+    tokio::task::spawn_blocking(|| {
+        let socket = UdpSocket::bind("0.0.0.0:0").map_err(|err| err.to_string())?;
+        socket.connect("8.8.8.8:80").map_err(|err| err.to_string())?;
+        socket
+            .local_addr()
+            .map(|addr| addr.ip().to_string())
+            .map_err(|err| err.to_string())
+    })
+    .await
+    .map_err(|err| err.to_string())?
 }

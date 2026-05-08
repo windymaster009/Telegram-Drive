@@ -55,9 +55,13 @@ export const nasApi = {
   logout: (csrfToken?: string) =>
     request<{ ok: boolean }>("/api/auth/logout", { method: "POST", body: JSON.stringify({}) }, csrfToken),
   me: () => request<MeResponse>("/api/auth/me"),
+  requestQr: (payload: { identifier: string }) =>
+    request<QrTokenResponse>("/api/auth/qr/request", { method: "POST", body: JSON.stringify(payload) }),
+  qrStatus: (token: string) =>
+    request<{ approved: boolean; expired: boolean }>(`/api/auth/qr/status/${encodeURIComponent(token)}`),
   redeemQr: (token: string) => request<LoginResponse>(`/api/auth/qr/redeem/${encodeURIComponent(token)}`, { method: "POST", body: JSON.stringify({}) }),
   listUsers: () => request<AppUser[]>("/api/admin/users"),
-  createUser: (payload: { username: string; password: string; display_name: string; disabled: boolean; role: "admin" | "user" }, csrfToken: string) =>
+  createUser: (payload: { username: string; password: string; display_name: string; telegram_username?: string; disabled: boolean; role: "admin" | "user" }, csrfToken: string) =>
     request<AppUser>("/api/admin/users", { method: "POST", body: JSON.stringify(payload) }, csrfToken),
   updateUser: (userId: string, payload: Record<string, unknown>, csrfToken: string) =>
     request<{ ok: boolean }>(`/api/admin/users/${userId}`, { method: "PUT", body: JSON.stringify(payload) }, csrfToken),

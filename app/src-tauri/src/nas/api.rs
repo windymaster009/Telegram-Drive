@@ -9,8 +9,8 @@ use super::crypto::{
 };
 use super::models::{
     AppRole, AuthClaims, BootstrapRequest, LoginRequest, LoginResponse, MeResponse,
-    OwnerConfigRequest, PermissionUpdateRequest, QrTokenResponse, SystemStatus, UserPatchRequest,
-    UserUpsertRequest,
+    OwnerConfigRequest, PermissionUpdateRequest, PublicQrRequest, QrStatusResponse,
+    QrTokenResponse, SystemStatus, UserPatchRequest, UserUpsertRequest,
 };
 use super::state::NasState;
 
@@ -29,6 +29,9 @@ pub fn configure_api(cfg: &mut web::ServiceConfig) {
         .service(me)
         .service(login)
         .service(logout)
+        .service(request_public_qr)
+        .service(approve_qr)
+        .service(qr_status)
         .service(redeem_qr)
         .service(bootstrap_admin)
         .service(list_users)
@@ -94,6 +97,7 @@ async fn bootstrap_admin(
         .create_user(
             payload.username.clone(),
             payload.display_name.clone(),
+            None,
             password_hash,
             AppRole::Admin,
             false,
@@ -256,6 +260,7 @@ async fn create_user(
         .create_user(
             payload.username.clone(),
             payload.display_name.clone(),
+            normalize_telegram_username(payload.telegram_username.clone()),
             password_hash,
             payload.role.clone(),
             payload.disabled,
@@ -270,7 +275,7 @@ async fn create_user(
                     "create_user".to_string(),
                     "user".to_string(),
                     user.id.clone(),
-                    "{}".to_string(),
+                    json!({ "telegram_username": user.telegram_username }).to_string(),
                 )
                 .await;
             HttpResponse::Ok().json(user)
@@ -304,6 +309,7 @@ async fn update_user(
         .patch_user(
             user_id.clone(),
             payload.display_name.clone(),
+            normalize_telegram_username(payload.telegram_username.clone()),
             payload.disabled,
             payload.role.clone(),
             password_hash,
@@ -407,6 +413,7 @@ async fn generate_qr(
             sha256_hex(&raw_token),
             ctx.user_id,
             expires_at,
+            false,
         )
         .await
     {
@@ -643,4 +650,87 @@ fn user_agent(req: &HttpRequest) -> String {
         .and_then(|value| value.to_str().ok())
         .unwrap_or("unknown")
         .to_string()
+}
+
+#[post("/api/auth/qr/request")]
+async fn request_public_qr(
+    state: web::Data<NasState>,
+    payload: web::Json<PublicQrRequest>,
+    req: HttpRequest,
+) -> impl Responder {
+    if !state
+        .allow_rate(format!("qr-request:{}", client_ip(&req)), 8, 60)
+        .await
+    {
+        return HttpResponse::TooManyRequests().json(json!({ "error": "Too many QR requests" }));
+    }
+
+    let user = match state
+        .db
+        .get_user_by_login_identifier(payload.identifier.clone())
+        .await
+    {
+        Ok(Some(user)) => user,
+        Ok(None) => return HttpResponse::NotFound().json(json!({ "error": "User not found" })),
+        Err(err) => return HttpResponse::InternalServerError().json(json!({ "error": err })),
+    };
+
+    if user.disabled {
+        return HttpResponse::Forbidden().json(json!({ "error": "User is disabled" }));
+    }
+
+    let raw_token = generate_token();
+    let expires_at = now_ts() + QR_TTL_SECONDS;
+    let login_url = format!("{}/api/auth/qr/approve/{}", state.api_base_url, raw_token);
+
+    match state
+        .db
+        .create_qr_token(
+            user.id.clone(),
+            sha256_hex(&raw_token),
+            user.id.clone(),
+            expires_at,
+            true,
+        )
+        .await
+    {
+        Ok(()) => HttpResponse::Ok().json(QrTokenResponse {
+            token: raw_token,
+            login_url,
+            expires_at,
+            user_id: user.id,
+        }),
+        Err(err) => HttpResponse::InternalServerError().json(json!({ "error": err })),
+    }
+}
+
+#[get("/api/auth/qr/approve/{token}")]
+async fn approve_qr(state: web::Data<NasState>, path: web::Path<String>) -> impl Responder {
+    let token_hash = sha256_hex(&path.into_inner());
+    match state.db.approve_qr_token(token_hash).await {
+        Ok(true) => HttpResponse::Ok()
+            .content_type("text/html; charset=utf-8")
+            .body("<!doctype html><html><body style=\"font-family:system-ui;background:#07111f;color:white;padding:32px\"><h1>QR approved</h1><p>Return to Telegram Drive on your desktop. You can close this page.</p></body></html>"),
+        Ok(false) => HttpResponse::Gone()
+            .content_type("text/html; charset=utf-8")
+            .body("<!doctype html><html><body style=\"font-family:system-ui;background:#07111f;color:white;padding:32px\"><h1>QR expired</h1><p>Ask for a new QR code from the login screen.</p></body></html>"),
+        Err(err) => HttpResponse::InternalServerError().json(json!({ "error": err })),
+    }
+}
+
+#[get("/api/auth/qr/status/{token}")]
+async fn qr_status(state: web::Data<NasState>, path: web::Path<String>) -> impl Responder {
+    let token_hash = sha256_hex(&path.into_inner());
+    match state.db.get_qr_status(token_hash).await {
+        Ok(Some((approved, expired))) => HttpResponse::Ok().json(QrStatusResponse { approved, expired }),
+        Ok(None) => HttpResponse::NotFound().json(json!({ "error": "QR not found" })),
+        Err(err) => HttpResponse::InternalServerError().json(json!({ "error": err })),
+    }
+}
+
+fn normalize_telegram_username(value: Option<String>) -> Option<String> {
+    value
+        .map(|username| username.trim().trim_start_matches('@').to_string())
+        .filter(|username| !username.is_empty())
+        .map(|username| format!("@{}", username))
 }

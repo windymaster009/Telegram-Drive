@@ -47,6 +47,11 @@ pub struct LoginRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublicQrRequest {
+    pub identifier: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OwnerConfigRequest {
     pub api_id: i32,
     pub api_hash: String,
@@ -57,6 +62,7 @@ pub struct UserUpsertRequest {
     pub username: String,
     pub password: Option<String>,
     pub display_name: String,
+    pub telegram_username: Option<String>,
     pub disabled: bool,
     pub role: AppRole,
 }
@@ -64,6 +70,7 @@ pub struct UserUpsertRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserPatchRequest {
     pub display_name: Option<String>,
+    pub telegram_username: Option<String>,
     pub disabled: Option<bool>,
     pub role: Option<AppRole>,
     pub password: Option<String>,
@@ -119,6 +126,7 @@ pub struct AppUser {
     pub id: String,
     pub username: String,
     pub display_name: String,
+    pub telegram_username: Option<String>,
     pub role: AppRole,
     pub disabled: bool,
     pub created_at: i64,
@@ -142,6 +150,12 @@ pub struct QrTokenResponse {
     pub login_url: String,
     pub expires_at: i64,
     pub user_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QrStatusResponse {
+    pub approved: bool,
+    pub expired: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
