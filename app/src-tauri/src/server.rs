@@ -1,7 +1,7 @@
 use actix_web::{get, web, App, HttpServer, HttpResponse, Responder};
 use actix_cors::Cors;
 use crate::commands::TelegramState;
-use crate::commands::utils::resolve_peer;
+use crate::commands::utils::resolve_peer_ref;
 use grammers_client::types::Media;
 
 use std::sync::Arc;
@@ -59,7 +59,7 @@ async fn stream_media(
 
     if let Some(client) = client_opt {
         log::debug!("Stream request: Client acquired, resolving peer for msg {}...", message_id);
-        match resolve_peer(&client, folder_id, &data.peer_cache).await {
+        match resolve_peer_ref(&client, folder_id, &data.peer_cache).await {
             Ok(peer) => {
                 log::debug!("Stream request: Peer resolved, fetching message {}...", message_id);
                 // Try to fetch message efficiently

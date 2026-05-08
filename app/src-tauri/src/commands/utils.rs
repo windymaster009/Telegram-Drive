@@ -1,5 +1,7 @@
 use grammers_client::Client;
 use grammers_client::types::Peer;
+use grammers_session::types::PeerRef;
+use grammers_tl_types as tl;
 use tauri::State;
 use crate::bandwidth::BandwidthManager;
 use std::collections::HashMap;
@@ -52,6 +54,20 @@ pub async fn resolve_peer(
             Err(e) => Err(e.to_string()),
         }
     }
+}
+
+pub async fn resolve_peer_ref(
+    client: &Client,
+    folder_id: Option<i64>,
+    peer_cache: &Arc<RwLock<HashMap<i64, Peer>>>,
+) -> Result<PeerRef, String> {
+    if folder_id.is_none() {
+        return Ok(tl::enums::InputPeer::PeerSelf.into());
+    }
+
+    resolve_peer(client, folder_id, peer_cache)
+        .await
+        .map(PeerRef::from)
 }
 
 /// Clear the peer cache (called on logout)

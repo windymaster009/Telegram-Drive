@@ -64,6 +64,30 @@ const decodeTextDataUrl = (src: string) => {
     }
 };
 
+type TextMessageBlock = {
+    id: string;
+    date: string;
+    body: string;
+};
+
+const parseTextMessageBlocks = (text: string): TextMessageBlock[] => {
+    const pattern = /^={20,}\nMESSAGE #(.+)\nDATE: (.+)\n={20,}\n/gm;
+    const matches = [...text.matchAll(pattern)];
+    if (matches.length === 0) return [];
+
+    return matches.map((match, index) => {
+        const bodyStart = (match.index ?? 0) + match[0].length;
+        const nextMatch = matches[index + 1];
+        const bodyEnd = nextMatch?.index ?? text.length;
+
+        return {
+            id: match[1],
+            date: match[2],
+            body: text.slice(bodyStart, bodyEnd).trim(),
+        };
+    });
+};
+
 interface PreviewModalProps {
     file: TelegramFile;
     onClose: () => void;
@@ -91,6 +115,13 @@ export function PreviewModal({ file, onClose, onNext, onPrev, currentIndex, tota
 
     useEffect(() => {
         const load = async () => {
+            if (file.text_content && isTextFile(file.name)) {
+                setSrc('data:text/plain;base64,');
+                setLoading(false);
+                setError(null);
+                return;
+            }
+
             const key = getPreviewCacheKey(file.id, activeFolderId);
             const shouldBypassCache = reloadNonce > 0;
             const requestId = ++latestRequestRef.current;
@@ -256,9 +287,34 @@ export function PreviewModal({ file, onClose, onNext, onPrev, currentIndex, tota
                             />
                         ) : isTextFile(file.name) ? (
                             <div className="bg-[#141c26] border border-white/10 shadow-2xl rounded-lg max-w-4xl max-h-[80vh] overflow-auto p-5">
-                                <pre className="text-left text-sm leading-6 text-white/90 whitespace-pre-wrap break-words font-mono">
-                                    {file.text_content || decodeTextDataUrl(src) || ''}
-                                </pre>
+                                {(() => {
+                                    const text = file.text_content || decodeTextDataUrl(src) || '';
+                                    const blocks = parseTextMessageBlocks(text);
+
+                                    if (blocks.length === 0) {
+                                        return (
+                                            <pre className="text-left text-sm leading-6 text-white/90 whitespace-pre-wrap break-words font-mono">
+                                                {text}
+                                            </pre>
+                                        );
+                                    }
+
+                                    return (
+                                        <div className="space-y-8 text-left font-mono">
+                                            {blocks.map((block) => (
+                                                <section key={`${block.id}-${block.date}`} className="border-t border-white/20 pt-4">
+                                                    <div className="mb-4">
+                                                        <div className="text-xl font-bold text-white">Message #{block.id}</div>
+                                                        <div className="mt-1 text-sm font-semibold text-telegram-primary">{block.date}</div>
+                                                    </div>
+                                                    <pre className="text-sm leading-6 text-white/90 whitespace-pre-wrap break-words font-mono">
+                                                        {block.body}
+                                                    </pre>
+                                                </section>
+                                            ))}
+                                        </div>
+                                    );
+                                })()}
                             </div>
                         ) : (
                             <div className="bg-[#1c1c1c] p-8 rounded-xl text-center border border-white/10 shadow-2xl">
