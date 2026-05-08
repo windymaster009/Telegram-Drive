@@ -1,7 +1,21 @@
-# Tauri + React + Typescript
+# Telegram Drive App
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
+This folder contains the Tauri desktop app.
 
-## Recommended IDE Setup
+## Run Locally
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+From this folder:
+
+```bash
+npm install
+npm run tauri dev
+```
+
+If `npm run tauri dev` says Cargo is missing, install Rust from https://rustup.rs/, restart your terminal, and verify:
+
+```bash
+cargo --version
+rustc --version
+```
+
+For the full setup guide, see the root `README.md`.

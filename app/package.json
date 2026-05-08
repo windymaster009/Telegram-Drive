@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "pretauri": "node scripts/check-tauri-prereqs.mjs",
     "tauri": "tauri"
   },
   "dependencies": {
@@ -21,6 +22,7 @@
     "framer-motion": "^12.26.2",
     "lucide-react": "^0.562.0",
     "pdfjs-dist": "^5.6.205",
+    "qrcode.react": "^4.2.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "sonner": "^2.0.7"

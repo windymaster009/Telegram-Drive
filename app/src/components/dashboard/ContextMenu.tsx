@@ -11,9 +11,10 @@ interface ContextMenuProps {
     onDownload: () => void;
     onDelete: () => void;
     onPreview: () => void;
+    canWrite?: boolean;
 }
 
-export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPreview }: ContextMenuProps) {
+export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPreview, canWrite = true }: ContextMenuProps) {
     const [adjustedPos, setAdjustedPos] = useState({ x, y });
     const menuRef = useRef<HTMLDivElement>(null);
 
@@ -95,17 +96,21 @@ export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPrevi
                 Download
             </button>
 
-            <button disabled className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-subtext hover:bg-telegram-hover rounded transition-colors text-left w-full cursor-not-allowed opacity-50">
-                <Pencil className="w-4 h-4" />
-                Rename
-            </button>
+            {canWrite && (
+                <button disabled className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-subtext hover:bg-telegram-hover rounded transition-colors text-left w-full cursor-not-allowed opacity-50">
+                    <Pencil className="w-4 h-4" />
+                    Rename
+                </button>
+            )}
 
-            <div className="h-px bg-telegram-border my-1" />
+            {canWrite && <div className="h-px bg-telegram-border my-1" />}
 
-            <button onClick={onDelete} className="flex items-center gap-2 px-2 py-1.5 text-sm text-red-500 hover:bg-red-500/10 rounded transition-colors text-left w-full">
-                <Trash2 className="w-4 h-4" />
-                Delete
-            </button>
+            {canWrite && (
+                <button onClick={onDelete} className="flex items-center gap-2 px-2 py-1.5 text-sm text-red-500 hover:bg-red-500/10 rounded transition-colors text-left w-full">
+                    <Trash2 className="w-4 h-4" />
+                    Delete
+                </button>
+            )}
         </div>
     );
 }

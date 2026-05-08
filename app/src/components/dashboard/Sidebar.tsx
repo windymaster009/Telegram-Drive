@@ -16,11 +16,15 @@ interface SidebarProps {
     onSync: () => void;
     onLogout: () => void;
     bandwidth: BandwidthStats | null;
+    allowFolderManagement?: boolean;
+    showSavedMessages?: boolean;
 }
 
 export function Sidebar({
     folders, activeFolderId, setActiveFolderId, onDrop, onDelete, onCreate,
-    isSyncing, isConnected, onSync, onLogout, bandwidth
+    isSyncing, isConnected, onSync, onLogout, bandwidth,
+    allowFolderManagement = true,
+    showSavedMessages = true
 }: SidebarProps) {
     const [showNewFolderInput, setShowNewFolderInput] = useState(false);
     const [newFolderName, setNewFolderName] = useState("");
@@ -45,14 +49,16 @@ export function Sidebar({
 
             {/* Scrollable folder list */}
             <nav className="flex-1 px-2 py-4 space-y-1 overflow-y-auto min-h-0">
-                <SidebarItem
-                    icon={HardDrive}
-                    label="Saved Messages"
-                    active={activeFolderId === null}
-                    onClick={() => setActiveFolderId(null)}
-                    onDrop={(e: React.DragEvent) => onDrop(e, null)}
-                    folderId={null}
-                />
+                {showSavedMessages && (
+                    <SidebarItem
+                        icon={HardDrive}
+                        label="Saved Messages"
+                        active={activeFolderId === null}
+                        onClick={() => setActiveFolderId(null)}
+                        onDrop={(e: React.DragEvent) => onDrop(e, null)}
+                        folderId={null}
+                    />
+                )}
                 {folders.map(folder => (
                     <SidebarItem
                         key={folder.id}
@@ -61,13 +67,14 @@ export function Sidebar({
                         active={activeFolderId === folder.id}
                         onClick={() => setActiveFolderId(folder.id)}
                         onDrop={(e: React.DragEvent) => onDrop(e, folder.id)}
-                        onDelete={() => onDelete(folder.id, folder.name)}
+                        onDelete={allowFolderManagement ? () => onDelete(folder.id, folder.name) : undefined}
                         folderId={folder.id}
                     />
                 ))}
             </nav>
 
             {/* Sticky Create Folder section — always visible above the footer */}
+            {allowFolderManagement && (
             <div className="px-2 pb-2 border-b border-telegram-border">
                 {showNewFolderInput ? (
                     <div className="px-3 py-2">
@@ -92,6 +99,7 @@ export function Sidebar({
                     </button>
                 )}
             </div>
+            )}
 
             <div className="p-4 border-t border-telegram-border">
                 <div className="flex items-center gap-2 text-telegram-subtext text-xs">
@@ -100,15 +108,17 @@ export function Sidebar({
                 </div>
 
                 <div className="flex gap-2 mt-4">
-                    <button
-                        onClick={onSync}
-                        disabled={isSyncing}
-                        className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-blue-500 hover:text-blue-600 bg-blue-500/10 hover:bg-blue-500/20 rounded-lg transition-colors ${isSyncing ? 'opacity-50 cursor-not-allowed' : ''}`}
-                        title="Scan for existing folders"
-                    >
-                        <RefreshCw className={`w-3 h-3 ${isSyncing ? 'animate-spin' : ''}`} />
-                        {isSyncing ? 'Syncing...' : 'Sync'}
-                    </button>
+                    {allowFolderManagement && (
+                        <button
+                            onClick={onSync}
+                            disabled={isSyncing}
+                            className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-blue-500 hover:text-blue-600 bg-blue-500/10 hover:bg-blue-500/20 rounded-lg transition-colors ${isSyncing ? 'opacity-50 cursor-not-allowed' : ''}`}
+                            title="Scan for existing folders"
+                        >
+                            <RefreshCw className={`w-3 h-3 ${isSyncing ? 'animate-spin' : ''}`} />
+                            {isSyncing ? 'Syncing...' : 'Sync'}
+                        </button>
+                    )}
                     <button
                         onClick={onLogout}
                         className="flex-1 flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-red-500 hover:text-red-600 bg-red-500/10 hover:bg-red-500/20 rounded-lg transition-colors"

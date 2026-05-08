@@ -1,10 +1,12 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { AnimatePresence } from 'framer-motion';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
+import { LogOut, Shield } from 'lucide-react';
 
-import { TelegramFile, BandwidthStats } from '../types';
+import { TelegramFile, BandwidthStats, TelegramFolder } from '../types';
+import type { PermissionAssignment } from '../types/nas';
 import { formatBytes, isMediaFile, isPdfFile } from '../utils';
 
 // Components
@@ -27,14 +29,60 @@ import { useFileUpload } from '../hooks/useFileUpload';
 import { useFileDownload } from '../hooks/useFileDownload';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 
-export function Dashboard({ onLogout }: { onLogout: () => void }) {
+interface DashboardProps {
+    onLogout: () => void;
+    permissions?: PermissionAssignment[];
+    allowFolderManagement?: boolean;
+    adminControls?: {
+        onAdminBack: () => void;
+    };
+}
+
+const isRootPermission = (folderId: string) => {
+    const normalized = folderId.trim().toLowerCase();
+    return normalized === "me" || normalized === "home" || normalized === "saved_messages" || normalized === "saved messages" || normalized === "null" || normalized === "root";
+};
+
+export function Dashboard({ onLogout, permissions, allowFolderManagement = true, adminControls }: DashboardProps) {
     const queryClient = useQueryClient();
 
 
     const {
         store, folders, activeFolderId, setActiveFolderId, isSyncing, isConnected,
-        handleLogout, handleSyncFolders, handleCreateFolder, handleFolderDelete
+        handleSyncFolders, handleCreateFolder, handleFolderDelete
     } = useTelegramConnection(onLogout);
+
+    const isPermissionMode = !!permissions;
+    const permissionByFolder = useMemo(
+        () => new Map(
+            permissions?.map((permission) => [
+                isRootPermission(permission.folder_id) ? "root" : permission.folder_id,
+                permission,
+            ]) || []
+        ),
+        [permissions]
+    );
+    const showSavedMessages = !isPermissionMode || permissionByFolder.has("root");
+    const visibleFolders: TelegramFolder[] = useMemo(
+        () => isPermissionMode
+            ? permissions
+                .filter((permission) => !isRootPermission(permission.folder_id))
+                .map((permission) => ({
+                    id: Number(permission.folder_id),
+                    name: permission.folder_label,
+                }))
+                .filter((folder) => Number.isFinite(folder.id))
+            : folders,
+        [folders, isPermissionMode, permissions]
+    );
+    const activePermission = isPermissionMode
+        ? permissionByFolder.get(activeFolderId === null ? "root" : String(activeFolderId))
+        : undefined;
+    const canWrite = !isPermissionMode || activePermission?.access_level === "read_write";
+    const hasFolderAccess = !isPermissionMode || showSavedMessages || visibleFolders.length > 0;
+    const activeFolderAllowed = !isPermissionMode || (activeFolderId === null
+        ? showSavedMessages
+        : visibleFolders.some((folder) => folder.id === activeFolderId));
 
 
     const [previewFile, setPreviewFile] = useState<TelegramFile | null>(null);
@@ -70,6 +118,22 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
         }
     }, [store, viewMode]);
 
+    useEffect(() => {
+        if (!isPermissionMode) return;
+
+        const activeAllowed = activeFolderId === null
+            ? showSavedMessages
+            : visibleFolders.some((folder) => folder.id === activeFolderId);
+
+        if (activeAllowed) return;
+
+        if (showSavedMessages) {
+            setActiveFolderId(null);
+        } else if (visibleFolders[0]) {
+            setActiveFolderId(visibleFolders[0].id);
+        }
+    }, [isPermissionMode, activeFolderId, showSavedMessages, visibleFolders, setActiveFolderId]);
+
 
     const { data: allFiles = [], isLoading, error } = useQuery({
         queryKey: ['files', activeFolderId],
@@ -78,7 +142,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
             sizeStr: formatBytes(f.size),
             type: f.icon_type || (f.name.endsWith('/') ? 'folder' : 'file')
         }))),
-        enabled: !!store,
+        enabled: !!store && hasFolderAccess && activeFolderAllowed,
     });
 
     const displayedFiles = searchTerm.length > 2
@@ -108,10 +172,11 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     }, [displayedFiles]);
 
     const handleKeyboardDelete = useCallback(() => {
+        if (!canWrite) return;
         if (selectedIds.length > 0) {
             handleBulkDelete();
         }
-    }, [selectedIds, handleBulkDelete]);
+    }, [selectedIds, handleBulkDelete, canWrite]);
 
     const handleEscape = useCallback(() => {
         setSelectedIds([]);
@@ -291,6 +356,11 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
         e.preventDefault();
         e.stopPropagation();
 
+        if (!canWrite) {
+            toast.error("This folder is read-only.");
+            return;
+        }
+
         const dataTransferFileId = e.dataTransfer.getData("application/x-telegram-file-id");
 
         if (activeFolderId === targetFolderId) return;
@@ -320,13 +390,15 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
         }
     }
 
-    const currentFolderName = activeFolderId === null
+    const currentFolderName = !hasFolderAccess
+        ? "No folder assigned"
+        : activeFolderId === null
         ? "Saved Messages"
-        : folders.find(f => f.id === activeFolderId)?.name || "Folder";
+        : visibleFolders.find(f => f.id === activeFolderId)?.name || folders.find(f => f.id === activeFolderId)?.name || "Folder";
 
 
     const handleRootDragOver = (e: React.DragEvent) => {
-        if (internalDragRef.current) {
+        if (canWrite && internalDragRef.current) {
             e.preventDefault();
             e.stopPropagation();
             e.dataTransfer.dropEffect = 'move';
@@ -334,7 +406,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     };
 
     const handleRootDragEnter = (e: React.DragEvent) => {
-        if (internalDragRef.current) {
+        if (canWrite && internalDragRef.current) {
             e.preventDefault();
             e.stopPropagation();
             e.dataTransfer.dropEffect = 'move';
@@ -351,12 +423,12 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
             onDragEnter={handleRootDragEnter}
         >
 
-            <ExternalDropBlocker onUploadClick={handleManualUpload} />
+            {canWrite && <ExternalDropBlocker onUploadClick={handleManualUpload} />}
 
             <AnimatePresence>
                 {showMoveModal && (
                     <MoveToFolderModal
-                        folders={folders}
+                        folders={visibleFolders}
                         onClose={() => setShowMoveModal(false)}
                         onSelect={handleBulkMove}
                         activeFolderId={activeFolderId}
@@ -387,11 +459,11 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                         key="pdf-viewer"
                     />
                 )}
-                {isDragging && internalDragFileId === null && <DragDropOverlay key="drag-drop-overlay" />}
+                {canWrite && isDragging && internalDragFileId === null && <DragDropOverlay key="drag-drop-overlay" />}
             </AnimatePresence>
 
             <Sidebar
-                folders={folders}
+                folders={visibleFolders}
                 activeFolderId={activeFolderId}
                 setActiveFolderId={setActiveFolderId}
                 onDrop={handleDropOnFolder}
@@ -400,8 +472,10 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                 isSyncing={isSyncing}
                 isConnected={isConnected}
                 onSync={handleSyncFolders}
-                onLogout={handleLogout}
+                onLogout={onLogout}
                 bandwidth={bandwidth || null}
+                allowFolderManagement={allowFolderManagement}
+                showSavedMessages={showSavedMessages}
             />
 
             <main className="flex-1 flex flex-col" onClick={(e) => { if (e.target === e.currentTarget) setSelectedIds([]); }}>
@@ -416,6 +490,32 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                     setViewMode={setViewMode}
                     searchTerm={searchTerm}
                     onSearchChange={setSearchTerm}
+                    canWrite={canWrite}
+                    extraActions={adminControls && (
+                        <>
+                            <div className="w-px h-6 bg-telegram-border mx-1"></div>
+                            <button
+                                onClick={adminControls.onAdminBack}
+                                className="p-2 hover:bg-telegram-hover rounded-md text-telegram-subtext hover:text-telegram-text transition relative group"
+                                title="Admin Console"
+                            >
+                                <Shield className="w-5 h-5" />
+                                <span className="absolute -bottom-8 left-1/2 -translate-x-1/2 text-[10px] bg-telegram-surface border border-telegram-border px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50 shadow-lg">
+                                    Admin
+                                </span>
+                            </button>
+                            <button
+                                onClick={onLogout}
+                                className="p-2 hover:bg-telegram-hover rounded-md text-telegram-subtext hover:text-red-400 transition relative group"
+                                title="Sign Out"
+                            >
+                                <LogOut className="w-5 h-5" />
+                                <span className="absolute -bottom-8 left-1/2 -translate-x-1/2 text-[10px] bg-telegram-surface border border-telegram-border px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50 shadow-lg">
+                                    Sign Out
+                                </span>
+                            </button>
+                        </>
+                    )}
                 />
                 {searchTerm.length > 2 && (
                     <div className="px-6 pt-4 pb-0">
@@ -442,6 +542,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                     onDrop={handleDropOnFolder}
                     onDragStart={(fileId) => setInternalDragFileId(fileId)}
                     onDragEnd={() => setTimeout(() => setInternalDragFileId(null), 50)}
+                    canWrite={canWrite}
                 />
             </main>
 

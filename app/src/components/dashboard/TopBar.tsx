@@ -1,4 +1,5 @@
 import { HardDrive, LayoutGrid, Sun, Moon } from 'lucide-react';
+import type { ReactNode } from 'react';
 import { useTheme } from '../../context/ThemeContext';
 
 interface TopBarProps {
@@ -12,11 +13,15 @@ interface TopBarProps {
     setViewMode: (mode: 'grid' | 'list') => void;
     searchTerm: string;
     onSearchChange: (term: string) => void;
+    canWrite?: boolean;
+    extraActions?: ReactNode;
 }
 
 export function TopBar({
     currentFolderName, selectedIds, onShowMoveModal, onBulkDownload, onBulkDelete,
-    onDownloadFolder, viewMode, setViewMode, searchTerm, onSearchChange
+    onDownloadFolder, viewMode, setViewMode, searchTerm, onSearchChange,
+    canWrite = true,
+    extraActions
 }: TopBarProps) {
     const { theme, toggleTheme } = useTheme();
 
@@ -44,9 +49,9 @@ export function TopBar({
                 {selectedIds.length > 0 && (
                     <div className="flex items-center gap-2 mr-4 animate-in fade-in slide-in-from-top-2">
                         <span className="text-xs text-telegram-subtext mr-2">{selectedIds.length} Selected</span>
-                        <button onClick={onShowMoveModal} className="px-3 py-1.5 bg-telegram-primary/20 hover:bg-telegram-primary/30 text-telegram-primary rounded-md text-xs transition font-medium">Move to...</button>
+                        {canWrite && <button onClick={onShowMoveModal} className="px-3 py-1.5 bg-telegram-primary/20 hover:bg-telegram-primary/30 text-telegram-primary rounded-md text-xs transition font-medium">Move to...</button>}
                         <button onClick={onBulkDownload} className="px-3 py-1.5 bg-telegram-hover hover:bg-telegram-border rounded-md text-xs text-telegram-text transition">Download Selected</button>
-                        <button onClick={onBulkDelete} className="px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-md text-xs transition">Delete</button>
+                        {canWrite && <button onClick={onBulkDelete} className="px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-md text-xs transition">Delete</button>}
                     </div>
                 )}
 
@@ -80,6 +85,8 @@ export function TopBar({
                         {theme === 'dark' ? 'Light Mode' : 'Dark Mode'}
                     </span>
                 </button>
+
+                {extraActions}
             </div>
         </header>
     )

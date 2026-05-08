@@ -1,7 +1,7 @@
 import { Upload } from 'lucide-react';
 
 interface EmptyStateProps {
-    onUpload: () => void;
+    onUpload?: () => void;
 }
 
 export function EmptyState({ onUpload }: EmptyStateProps) {
@@ -52,16 +52,18 @@ export function EmptyState({ onUpload }: EmptyStateProps) {
                 This folder is empty
             </h3>
             <p className="text-telegram-subtext text-sm mb-6 max-w-xs">
-                Drag and drop files here, or click the button below to upload from your computer.
+                {onUpload ? "Drag and drop files here, or click the button below to upload from your computer." : "This folder is available to view, but uploads are disabled for your account."}
             </p>
 
-            <button
-                onClick={onUpload}
-                className="inline-flex items-center gap-2 px-6 py-3 bg-telegram-primary text-black font-medium rounded-xl hover:bg-telegram-primary/90 transition-all hover:scale-105 shadow-lg shadow-telegram-primary/20"
-            >
-                <Upload className="w-5 h-5" />
-                Upload Files
-            </button>
+            {onUpload && (
+                <button
+                    onClick={onUpload}
+                    className="inline-flex items-center gap-2 px-6 py-3 bg-telegram-primary text-black font-medium rounded-xl hover:bg-telegram-primary/90 transition-all hover:scale-105 shadow-lg shadow-telegram-primary/20"
+                >
+                    <Upload className="w-5 h-5" />
+                    Upload Files
+                </button>
+            )}
 
             <p className="text-xs text-telegram-subtext/50 mt-6">
                 Tip: Use <kbd className="px-1.5 py-0.5 bg-telegram-hover rounded text-telegram-subtext">Cmd + F</kbd> to search

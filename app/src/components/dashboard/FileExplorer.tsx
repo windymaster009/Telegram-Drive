@@ -27,6 +27,7 @@ interface FileExplorerProps {
     onDrop?: (e: React.DragEvent, folderId: number) => void;
     onDragStart?: (fileId: number) => void;
     onDragEnd?: () => void;
+    canWrite?: boolean;
 }
 
 
@@ -60,7 +61,8 @@ const isTextMessagesFile = (file: TelegramFile) => file.id === -1 && file.name =
 
 export function FileExplorer({
     files, loading, error, viewMode, selectedIds, activeFolderId,
-    onFileClick, onDelete, onDownload, onPreview, onManualUpload, onSelectionClear, onToggleSelection, onDrop, onDragStart, onDragEnd
+    onFileClick, onDelete, onDownload, onPreview, onManualUpload, onSelectionClear, onToggleSelection, onDrop, onDragStart, onDragEnd,
+    canWrite = true
 }: FileExplorerProps) {
     const [sortField, setSortField] = useState<SortField>('name');
     const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
@@ -111,17 +113,17 @@ export function FileExplorer({
 
     const gridRows = useMemo(() => {
         const rows: (TelegramFile | 'upload')[][] = [];
-        const itemsWithUpload: (TelegramFile | 'upload')[] = [...sortedFiles, 'upload'];
+        const itemsWithUpload: (TelegramFile | 'upload')[] = canWrite ? [...sortedFiles, 'upload'] : [...sortedFiles];
         for (let i = 0; i < itemsWithUpload.length; i += columns) {
             rows.push(itemsWithUpload.slice(i, i + columns));
         }
         return rows;
-    }, [sortedFiles, columns]);
+    }, [sortedFiles, columns, canWrite]);
 
 
     const listItems = useMemo(() => {
-        return activeFolderId === null ? [...sortedFiles, 'upload' as const] : sortedFiles;
-    }, [sortedFiles, activeFolderId]);
+        return activeFolderId === null && canWrite ? [...sortedFiles, 'upload' as const] : sortedFiles;
+    }, [sortedFiles, activeFolderId, canWrite]);
 
 
     const gridVirtualizer = useVirtualizer({
@@ -176,7 +178,7 @@ export function FileExplorer({
     if (files.length === 0) {
         return (
             <div className="flex-1 p-6 overflow-auto">
-                <EmptyState onUpload={onManualUpload} />
+                <EmptyState onUpload={canWrite ? onManualUpload : undefined} />
             </div>
         );
     }
@@ -263,6 +265,7 @@ export function FileExplorer({
                                                 activeFolderId={activeFolderId}
                                                 height={cardHeight}
                                                 onToggleSelection={() => onToggleSelection(file.id)}
+                                                canWrite={canWrite}
                                             />
                                         );
                                     })}
@@ -329,6 +332,7 @@ export function FileExplorer({
                                         onPreview={handlePreviewRequest}
                                         onDownload={onDownload}
                                         onDelete={onDelete}
+                                        canWrite={canWrite}
                                     />
                                 </div>
                             );
@@ -348,7 +352,7 @@ export function FileExplorer({
                         setContextMenu(null);
                     }}
                     onDelete={() => {
-                        onDelete(contextMenu.file.id);
+                        if (canWrite) onDelete(contextMenu.file.id);
                         setContextMenu(null);
                     }}
                     onPreview={() => {
@@ -359,6 +363,7 @@ export function FileExplorer({
                         }
                         setContextMenu(null);
                     }}
+                    canWrite={canWrite}
                 />
             )}
         </div>

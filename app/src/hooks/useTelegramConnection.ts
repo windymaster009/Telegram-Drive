@@ -58,7 +58,15 @@ export function useTelegramConnection(onLogoutParent: () => void) {
                         }
                     }
                 } else {
-                    onLogoutParent();
+                    try {
+                        const connected = await invoke<boolean>('cmd_check_connection');
+                        setIsConnected(connected);
+                        if (connected) {
+                            queryClient.invalidateQueries({ queryKey: ['files'] });
+                        }
+                    } catch {
+                        setIsConnected(false);
+                    }
                 }
 
             } catch {

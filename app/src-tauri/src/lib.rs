@@ -1,4 +1,5 @@
 pub mod models;
+pub mod nas;
 
 pub mod commands;
 pub mod bandwidth;
@@ -9,6 +10,7 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use commands::TelegramState;
 use commands::streaming::StreamConfig;
+use nas::state::NasState;
 use rand::Rng;
 
 pub mod server;
@@ -50,7 +52,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .setup(move |app| {
-            app.manage(TelegramState {
+            let telegram_state = TelegramState {
                 client: Arc::new(Mutex::new(None)),
                 login_token: Arc::new(Mutex::new(None)),
                 password_token: Arc::new(Mutex::new(None)),
@@ -58,19 +60,51 @@ pub fn run() {
                 runner_shutdown: Arc::new(std::sync::Mutex::new(None)),
                 runner_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
                 peer_cache: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
-            });
+            };
+            let telegram_state_arc = Arc::new(telegram_state.clone());
+            app.manage(telegram_state);
             app.manage(bandwidth::BandwidthManager::new(app.handle()));
             app.manage(StreamConfig { token: stream_token.clone(), port: STREAM_PORT });
             app.manage(ActixServerHandle(server_handle_for_setup.clone()));
+
+            let app_data_dir = app
+                .path()
+                .app_data_dir()
+                .map_err(|err| err.to_string())?;
+            let api_base_url = format!("http://127.0.0.1:{}", STREAM_PORT);
+            let nas_state = tauri::async_runtime::block_on(NasState::new(
+                app_data_dir.clone(),
+                api_base_url,
+                telegram_state_arc.clone(),
+            ))?;
+            app.manage(nas_state.clone());
+
+            let nas_state_for_reconnect = nas_state.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Ok(Some(encrypted_api_id)) = nas_state_for_reconnect
+                    .db
+                    .get_secret("owner_api_id".to_string())
+                    .await
+                {
+                    if let Ok(api_id_str) = nas::crypto::decrypt_secret(
+                        &encrypted_api_id,
+                        nas_state_for_reconnect.master_key.as_ref(),
+                    ) {
+                        if let Ok(api_id) = api_id_str.parse::<i32>() {
+                            *nas_state_for_reconnect.telegram.api_id.lock().await = Some(api_id);
+                        }
+                    }
+                }
+            });
             
             // Start Streaming Server on dedicated thread (Actix needs its own runtime)
-            let state = Arc::new(app.state::<TelegramState>().inner().clone());
+            let nas_state_for_server = nas_state.clone();
             let token_for_server = stream_token.clone();
             let handle_for_thread = server_handle_for_setup.clone();
             std::thread::spawn(move || {
                 let sys = actix_rt::System::new();
                 sys.block_on(async move {
-                    match server::start_server(state, STREAM_PORT, token_for_server).await {
+                    match server::start_server(nas_state_for_server, STREAM_PORT, token_for_server).await {
                         Ok(server) => {
                             // Store the handle so RunEvent::Exit can stop it
                             *handle_for_thread.lock().unwrap() = Some(server.handle());
