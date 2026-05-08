@@ -4,6 +4,8 @@ import { toast } from 'sonner';
 import { useConfirm } from '../context/ConfirmContext';
 import { TelegramFile } from '../types';
 
+const TEXT_MESSAGES_FILE_ID = -1;
+
 export function useFileOperations(
     activeFolderId: number | null,
     selectedIds: number[],
@@ -12,8 +14,13 @@ export function useFileOperations(
 ) {
     const queryClient = useQueryClient();
     const { confirm } = useConfirm();
+    const isTextMessagesFile = (id: number) => id === TEXT_MESSAGES_FILE_ID;
 
     const handleDelete = async (id: number) => {
+        if (isTextMessagesFile(id)) {
+            toast.info("Text messages are grouped for display and cannot be deleted as a single file.");
+            return;
+        }
         if (!await confirm({ title: "Delete File", message: "Are you sure you want to delete this file?", confirmText: "Delete", variant: 'danger' })) return;
         try {
             await invoke('cmd_delete_file', { messageId: id, folderId: activeFolderId });
@@ -26,11 +33,16 @@ export function useFileOperations(
 
     const handleBulkDelete = async () => {
         if (selectedIds.length === 0) return;
-        if (!await confirm({ title: "Delete Files", message: `Are you sure you want to delete ${selectedIds.length} files?`, confirmText: "Delete All", variant: 'danger' })) return;
+        const deletableIds = selectedIds.filter((id) => !isTextMessagesFile(id));
+        if (deletableIds.length === 0) {
+            toast.info("Text messages are grouped for display and cannot be deleted as a single file.");
+            return;
+        }
+        if (!await confirm({ title: "Delete Files", message: `Are you sure you want to delete ${deletableIds.length} files?`, confirmText: "Delete All", variant: 'danger' })) return;
 
         let success = 0;
         let fail = 0;
-        for (const id of selectedIds) {
+        for (const id of deletableIds) {
             try {
                 await invoke('cmd_delete_file', { messageId: id, folderId: activeFolderId });
                 success++;
@@ -85,13 +97,18 @@ export function useFileOperations(
 
     const handleBulkMove = async (targetFolderId: number | null, onSuccess?: () => void) => {
         if (selectedIds.length === 0) return;
+        const movableIds = selectedIds.filter((id) => !isTextMessagesFile(id));
+        if (movableIds.length === 0) {
+            toast.info("Text messages are grouped for display and cannot be moved as a single file.");
+            return;
+        }
         try {
             await invoke('cmd_move_files', {
-                messageIds: selectedIds,
+                messageIds: movableIds,
                 sourceFolderId: activeFolderId,
                 targetFolderId: targetFolderId
             });
-            toast.success(`Moved ${selectedIds.length} files.`);
+            toast.success(`Moved ${movableIds.length} files.`);
             queryClient.invalidateQueries({ queryKey: ['files', activeFolderId] });
             setSelectedIds([]);
             if (onSuccess) onSuccess();

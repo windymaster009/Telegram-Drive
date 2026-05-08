@@ -5,7 +5,62 @@ use grammers_tl_types as tl;
 use crate::TelegramState;
 use crate::models::{FolderMetadata, FileMetadata};
 use crate::bandwidth::BandwidthManager;
-use crate::commands::utils::{resolve_peer, map_error};
+use crate::commands::utils::{resolve_peer, resolve_peer_ref, map_error};
+
+const TEXT_MESSAGE_PREVIEW_CHARS: usize = 32;
+const TEXT_MESSAGES_FILE_ID: i32 = -1;
+const TEXT_MESSAGES_FILE_NAME: &str = "Text messages.txt";
+
+fn text_message_name(message_id: i32, text: &str) -> String {
+    let mut preview = text
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("Text message")
+        .trim()
+        .chars()
+        .take(TEXT_MESSAGE_PREVIEW_CHARS)
+        .collect::<String>();
+
+    preview = preview
+        .chars()
+        .map(|c| match c {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            c if c.is_control() => ' ',
+            c => c,
+        })
+        .collect::<String>()
+        .trim()
+        .trim_matches('.')
+        .to_string();
+
+    if preview.is_empty() {
+        preview = "Text message".to_string();
+    }
+
+    format!("{}-{}.txt", preview, message_id)
+}
+
+struct TextMessageEntry {
+    id: i32,
+    date: String,
+    text: String,
+}
+
+fn format_text_messages(entries: &[TextMessageEntry]) -> String {
+    entries
+        .iter()
+        .rev()
+        .map(|entry| {
+            format!(
+                "============================================================\nMESSAGE #{}\nDATE: {}\n============================================================\n{}",
+                entry.id,
+                entry.date,
+                entry.text
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n\n")
+}
 
 #[tauri::command]
 pub async fn cmd_create_folder(
@@ -151,9 +206,9 @@ pub async fn cmd_upload_file(
         
     let message = InputMessage::new().text("").file(uploaded_file);
 
-    let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
+    let peer = resolve_peer_ref(&client, folder_id, &state.peer_cache).await?;
     
-    client.send_message(&peer, message).await.map_err(map_error)?;
+    client.send_message(peer, message).await.map_err(map_error)?;
     
     bw_state.add_up(size);
 
@@ -178,8 +233,8 @@ pub async fn cmd_delete_file(
     }
     let client = client_opt.unwrap();
 
-    let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
-    client.delete_messages(&peer, &[message_id]).await.map_err(|e| e.to_string())?;
+    let peer = resolve_peer_ref(&client, folder_id, &state.peer_cache).await?;
+    client.delete_messages(peer, &[message_id]).await.map_err(|e| e.to_string())?;
     Ok(true)
 }
 
@@ -203,18 +258,66 @@ pub async fn cmd_download_file(
     }
     let client = client_opt.unwrap();
     
-    let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
+    let peer = resolve_peer_ref(&client, folder_id, &state.peer_cache).await?;
+
+    if message_id == TEXT_MESSAGES_FILE_ID {
+        let mut text_messages = Vec::new();
+        let mut msgs = client.iter_messages(peer);
+        while let Some(msg) = msgs.next().await.map_err(|e| e.to_string())? {
+            if msg.media().is_none() {
+                let text = msg.text().trim();
+                if !text.is_empty() {
+                    text_messages.push(TextMessageEntry {
+                        id: msg.id(),
+                        date: msg.date().to_string(),
+                        text: text.to_string(),
+                    });
+                }
+            }
+        }
+
+        if text_messages.is_empty() {
+            return Err("No text messages found".to_string());
+        }
+
+        let content = format_text_messages(&text_messages);
+        bw_state.can_transfer(content.len() as u64)?;
+        std::fs::write(&save_path, content.as_bytes()).map_err(|e| e.to_string())?;
+        bw_state.add_down(content.len() as u64);
+
+        if !tid.is_empty() {
+            let _ = app_handle.emit("download-progress", ProgressPayload { id: tid, percent: 100 });
+        }
+
+        return Ok("Download successful".to_string());
+    }
 
     // Use get_messages_by_id for efficient message lookup (same as server.rs)
-    let messages = client.get_messages_by_id(&peer, &[message_id]).await.map_err(|e| e.to_string())?;
+    let peer = resolve_peer_ref(&client, folder_id, &state.peer_cache).await?;
+    let messages = client.get_messages_by_id(peer, &[message_id]).await.map_err(|e| e.to_string())?;
     
     let msg = messages.into_iter()
         .flatten()
         .next()
         .ok_or_else(|| "Message not found".to_string())?;
 
-    let media = msg.media()
-        .ok_or_else(|| "No media in message".to_string())?;
+    let text = msg.text().to_string();
+
+    let media = match msg.media() {
+        Some(media) => media,
+        None if !text.trim().is_empty() => {
+            bw_state.can_transfer(text.len() as u64)?;
+            std::fs::write(&save_path, text.as_bytes()).map_err(|e| e.to_string())?;
+            bw_state.add_down(text.len() as u64);
+
+            if !tid.is_empty() {
+                let _ = app_handle.emit("download-progress", ProgressPayload { id: tid, percent: 100 });
+            }
+
+            return Ok("Download successful".to_string());
+        },
+        None => return Err("No media or text in message".to_string()),
+    };
 
     let total_size = match &media {
         Media::Document(d) => d.size() as u64,
@@ -275,15 +378,16 @@ pub async fn cmd_move_files(
     }
     let client = client_opt.unwrap();
 
-    let source_peer = resolve_peer(&client, source_folder_id, &state.peer_cache).await?;
-    let target_peer = resolve_peer(&client, target_folder_id, &state.peer_cache).await?;
+    let source_peer = resolve_peer_ref(&client, source_folder_id, &state.peer_cache).await?;
+    let target_peer = resolve_peer_ref(&client, target_folder_id, &state.peer_cache).await?;
 
-    match client.forward_messages(&target_peer, &message_ids, &source_peer).await {
+    match client.forward_messages(target_peer, &message_ids, source_peer).await {
         Ok(_) => {},
         Err(e) => return Err(format!("Forward failed: {}", e)),
     }
     
-    match client.delete_messages(&source_peer, &message_ids).await {
+    let source_peer = resolve_peer_ref(&client, source_folder_id, &state.peer_cache).await?;
+    match client.delete_messages(source_peer, &message_ids).await {
         Ok(_) => {},
         Err(e) => return Err(format!("Delete original failed: {}", e)),
     }
@@ -304,9 +408,10 @@ pub async fn cmd_get_files(
     let client = client_opt.unwrap();
     let mut files = Vec::new();
     
-    let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
+    let peer = resolve_peer_ref(&client, folder_id, &state.peer_cache).await?;
 
-    let mut msgs = client.iter_messages(&peer);
+    let mut msgs = client.iter_messages(peer);
+    let mut text_messages = Vec::new();
     while let Some(msg) = msgs.next().await.map_err(|e| e.to_string())? {
         if let Some(doc) = msg.media() {
             let (name, size, mime, ext) = match doc {
@@ -321,9 +426,46 @@ pub async fn cmd_get_files(
                 _ => ("Unknown".to_string(), 0, None, None),
             };
             files.push(FileMetadata {
-                id: msg.id() as i64, folder_id, name, size: size as u64, mime_type: mime, file_ext: ext, created_at: msg.date().to_string(), icon_type: "file".into()
+                id: msg.id() as i64,
+                folder_id,
+                name,
+                size: size as u64,
+                mime_type: mime,
+                file_ext: ext,
+                created_at: msg.date().to_string(),
+                icon_type: "file".into(),
+                text_content: None,
             });
+        } else {
+            let text = msg.text().trim();
+            if !text.is_empty() {
+                text_messages.push(TextMessageEntry {
+                    id: msg.id(),
+                    date: msg.date().to_string(),
+                    text: text.to_string(),
+                });
+            }
         }
+    }
+
+    if !text_messages.is_empty() {
+        let content = format_text_messages(&text_messages);
+        let created_at = text_messages
+            .first()
+            .map(|entry| entry.date.clone())
+            .unwrap_or_default();
+
+        files.push(FileMetadata {
+            id: TEXT_MESSAGES_FILE_ID as i64,
+            folder_id,
+            name: TEXT_MESSAGES_FILE_NAME.to_string(),
+            size: content.len() as u64,
+            mime_type: Some("text/plain".into()),
+            file_ext: Some("txt".into()),
+            created_at,
+            icon_type: "file".into(),
+            text_content: Some(content),
+        });
     }
 
     Ok(files)
@@ -378,9 +520,27 @@ pub async fn cmd_search_global(
                         files.push(FileMetadata {
                             id: m.id as i64, folder_id, name, size,
                             mime_type: Some(mime), file_ext: ext,
-                            created_at: m.date.to_string(), icon_type: "file".into()
+                            created_at: m.date.to_string(), icon_type: "file".into(),
+                            text_content: None,
                         });
                     }
+                } else if !m.message.trim().is_empty() {
+                    let folder_id = match m.peer_id {
+                        tl::enums::Peer::Channel(c) => Some(c.channel_id),
+                        tl::enums::Peer::User(u) => Some(u.user_id),
+                        tl::enums::Peer::Chat(c) => Some(c.chat_id),
+                    };
+                    files.push(FileMetadata {
+                        id: m.id as i64,
+                        folder_id,
+                        name: text_message_name(m.id, &m.message),
+                        size: m.message.len() as u64,
+                        mime_type: Some("text/plain".into()),
+                        file_ext: Some("txt".into()),
+                        created_at: m.date.to_string(),
+                        icon_type: "file".into(),
+                        text_content: Some(m.message),
+                    });
                 }
             }
         }
@@ -404,9 +564,27 @@ pub async fn cmd_search_global(
                         files.push(FileMetadata {
                             id: m.id as i64, folder_id, name, size,
                             mime_type: Some(mime), file_ext: ext,
-                            created_at: m.date.to_string(), icon_type: "file".into()
+                            created_at: m.date.to_string(), icon_type: "file".into(),
+                            text_content: None,
                         });
                     }
+                } else if !m.message.trim().is_empty() {
+                    let folder_id = match m.peer_id {
+                        tl::enums::Peer::Channel(c) => Some(c.channel_id),
+                        tl::enums::Peer::User(u) => Some(u.user_id),
+                        tl::enums::Peer::Chat(c) => Some(c.chat_id),
+                    };
+                    files.push(FileMetadata {
+                        id: m.id as i64,
+                        folder_id,
+                        name: text_message_name(m.id, &m.message),
+                        size: m.message.len() as u64,
+                        mime_type: Some("text/plain".into()),
+                        file_ext: Some("txt".into()),
+                        created_at: m.date.to_string(),
+                        icon_type: "file".into(),
+                        text_content: Some(m.message),
+                    });
                 }
             }
         }

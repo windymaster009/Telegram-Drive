@@ -57,6 +57,8 @@ function useGridColumns(containerRef: React.RefObject<HTMLDivElement | null>) {
     return { columns, containerWidth };
 }
 
+const isTextMessagesFile = (file: TelegramFile) => file.id === -1 && file.name === 'Text messages.txt';
+
 export function FileExplorer({
     files, loading, error, viewMode, selectedIds, activeFolderId,
     onFileClick, onDelete, onDownload, onPreview, onManualUpload, onSelectionClear, onToggleSelection, onDrop, onDragStart, onDragEnd,
@@ -82,6 +84,12 @@ export function FileExplorer({
 
     const sortedFiles = useMemo(() => {
         return [...files].sort((a, b) => {
+            const aIsTextMessages = isTextMessagesFile(a);
+            const bIsTextMessages = isTextMessagesFile(b);
+            if (aIsTextMessages || bIsTextMessages) {
+                return aIsTextMessages ? -1 : 1;
+            }
+
             let comparison = 0;
             switch (sortField) {
                 case 'name':

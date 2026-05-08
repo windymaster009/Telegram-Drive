@@ -4,7 +4,7 @@ use grammers_client::types::Media;
 use base64::{Engine as _, engine::general_purpose};
 use crate::TelegramState;
 use crate::bandwidth::BandwidthManager;
-use crate::commands::utils::resolve_peer;
+use crate::commands::utils::resolve_peer_ref;
 
 const PREVIEW_CACHE_MAX_FILES: usize = 30;
 const PREVIEW_CACHE_MAX_TOTAL_BYTES: u64 = 80 * 1024 * 1024;
@@ -63,8 +63,8 @@ pub async fn cmd_get_preview(
     }
     let client = client_opt.unwrap();
 
-    let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
-    let messages = client.get_messages_by_id(&peer, &[message_id])
+    let peer = resolve_peer_ref(&client, folder_id, &state.peer_cache).await?;
+    let messages = client.get_messages_by_id(peer, &[message_id])
         .await.map_err(|e| e.to_string())?;
     let target_message = messages.into_iter().flatten().next();
 
@@ -153,6 +153,12 @@ pub async fn cmd_get_preview(
                 log::info!("Returning path preview: {}", save_path_str);
                 return Ok(save_path_str);
             }
+        } else {
+            let text = msg.text();
+            if !text.trim().is_empty() {
+                let b64 = general_purpose::STANDARD.encode(text.as_bytes());
+                return Ok(format!("data:text/plain;base64,{}", b64));
+            }
         }
     }
     Err("File not found or failed to download".to_string())
@@ -222,8 +228,8 @@ pub async fn cmd_get_thumbnail(
     }
     let client = client_opt.unwrap();
 
-    let peer = resolve_peer(&client, folder_id, &state.peer_cache).await?;
-    let messages = client.get_messages_by_id(&peer, &[message_id])
+    let peer = resolve_peer_ref(&client, folder_id, &state.peer_cache).await?;
+    let messages = client.get_messages_by_id(peer, &[message_id])
         .await.map_err(|e| e.to_string())?;
     if let Some(m) = messages.into_iter().flatten().next() {
         if let Some(media) = m.media() {
