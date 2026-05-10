@@ -81,10 +81,63 @@ async fn bootstrap_admin(
     payload: web::Json<BootstrapRequest>,
     req: HttpRequest,
 ) -> impl Responder {
-    let _ = (state, payload, req);
-    HttpResponse::Gone().json(json!({
-        "error": "Local bootstrap admin creation has been removed. Use Google OAuth and approve admins in MongoDB."
-    }))
+    match state.db.setup_required().await {
+        Ok(true) => {}
+        Ok(false) => {
+            return HttpResponse::BadRequest()
+                .json(json!({ "error": "Admin setup has already been completed" }))
+        }
+        Err(err) => return HttpResponse::InternalServerError().json(json!({ "error": err })),
+    }
+
+    if !state
+        .allow_rate(format!("bootstrap:{}", client_ip(&req)), 5, 60)
+        .await
+    {
+        return HttpResponse::TooManyRequests().json(json!({ "error": "Too many attempts" }));
+    }
+
+    if payload.username.trim().is_empty()
+        || payload.display_name.trim().is_empty()
+        || payload.password.len() < 8
+    {
+        return HttpResponse::BadRequest()
+            .json(json!({ "error": "Username, display name, and an 8+ character password are required" }));
+    }
+
+    let password_hash = match hash_password(&payload.password) {
+        Ok(hash) => hash,
+        Err(err) => return HttpResponse::InternalServerError().json(json!({ "error": err })),
+    };
+
+    let user = match state
+        .db
+        .create_user(
+            payload.username.trim().to_lowercase(),
+            payload.display_name.trim().to_string(),
+            None,
+            password_hash,
+            AppRole::Admin,
+            false,
+        )
+        .await
+    {
+        Ok(user) => user,
+        Err(err) => return HttpResponse::BadRequest().json(json!({ "error": err })),
+    };
+
+    let _ = state
+        .db
+        .add_audit_log(
+            Some(user.id.clone()),
+            "bootstrap_admin".to_string(),
+            "user".to_string(),
+            user.id.clone(),
+            "{}".to_string(),
+        )
+        .await;
+
+    issue_login_response(&state, &user, &req).await
 }
 
 #[derive(serde::Deserialize)]

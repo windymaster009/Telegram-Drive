@@ -223,7 +223,12 @@ impl Database {
     }
 
     pub async fn setup_required(&self) -> Result<bool, String> {
-        Ok(false)
+        let count = self
+            .users
+            .count_documents(doc! {}, None)
+            .await
+            .map_err(|err| err.to_string())?;
+        Ok(count == 0)
     }
 
     pub async fn owner_configured(&self) -> Result<bool, String> {
