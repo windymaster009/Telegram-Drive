@@ -1,13 +1,24 @@
 # Node
 node_modules/
 dist/
+.npm-cache/
+**/.npm-cache/
 .DS_Store
 .env
+*.env
 
 # Rust
-/app/src-tauri/target/
-/app/src-tauri/gen/
+target/
+**/target/
+**/gen/
 **/*.rs.bk
+
+# Local app/backend data
+.data/
+**/.data/
+*.session
+*.session.enc
+*.key
 
 # Editors
 .vscode/

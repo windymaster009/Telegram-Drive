@@ -92,8 +92,7 @@ jobs:
             librsvg2-dev \
             libfuse2
 
-      - name: Install frontend dependencies
-        working-directory: app
+      - name: Install workspace dependencies
         run: npm install
 
       - name: Build the app
@@ -104,7 +103,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
-          projectPath: ./app
+          projectPath: ./backend
           args: ${{ matrix.args }}
 
       - name: Patch AppImage for cross-distro EGL compatibility
@@ -112,7 +111,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          APPIMAGE_DIR="app/src-tauri/target/release/bundle/appimage"
+          APPIMAGE_DIR="backend/src-tauri/target/release/bundle/appimage"
           APPIMAGE=$(find "$APPIMAGE_DIR" -maxdepth 1 -name "*.AppImage" -type f 2>/dev/null | head -1)
 
           if [ -z "$APPIMAGE" ]; then
