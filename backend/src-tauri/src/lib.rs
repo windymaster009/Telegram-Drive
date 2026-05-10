@@ -66,6 +66,14 @@ fn api_port() -> u16 {
         .unwrap_or(DEFAULT_API_PORT)
 }
 
+fn api_base_url(host: &str, port: u16) -> String {
+    std::env::var("TELEGRAM_DRIVE_PUBLIC_API_BASE_URL")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| format!("http://{}:{}", host, port))
+}
+
 fn use_external_backend() -> bool {
     std::env::var("TELEGRAM_DRIVE_EXTERNAL_BACKEND")
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
@@ -200,7 +208,7 @@ pub fn run() {
                 "Using Telegram Drive data directory: {}",
                 app_data_dir.display()
             );
-            let api_base_url = format!("http://{}:{}", api_host, api_port);
+            let api_base_url = api_base_url(&api_host, api_port);
             let nas_state = tauri::async_runtime::block_on(NasState::new(
                 app_data_dir.clone(),
                 api_base_url,
