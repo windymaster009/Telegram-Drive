@@ -134,6 +134,12 @@ function AppContent() {
   );
   const isBrowserGoogleCallback =
     !runningInDesktop && (Boolean(googleCode) || Boolean(googleError) || window.location.pathname.includes("/auth/google/callback"));
+  const startupErrorQuery = useQuery({
+    queryKey: ["startup-error"],
+    queryFn: () => invoke<string | null>("cmd_startup_error"),
+    enabled: runningInDesktop,
+    retry: false,
+  });
 
   const systemQuery = useQuery({
     queryKey: ["system-status"],
@@ -284,7 +290,10 @@ function AppContent() {
       ) : isLoading ? (
         <CenteredCard title="Preparing Telegram NAS" subtitle="Loading the auth and owner-session state..." />
       ) : systemQuery.error ? (
-        <CenteredCard title="Backend Unavailable" subtitle={(systemQuery.error as Error).message} />
+        <CenteredCard
+          title={startupErrorQuery.data ? "Backend Setup Required" : "Backend Unavailable"}
+          subtitle={startupErrorQuery.data || (systemQuery.error as Error).message}
+        />
       ) : systemQuery.data?.setup_required ? (
         <BootstrapPage onBootstrapped={finishLogin} />
       ) : !meQuery.data ? (
