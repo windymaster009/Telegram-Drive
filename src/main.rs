@@ -17,6 +17,14 @@ fn api_port() -> u16 {
         .unwrap_or(DEFAULT_API_PORT)
 }
 
+fn api_base_url(host: &str, port: u16) -> String {
+    std::env::var("TELEGRAM_DRIVE_PUBLIC_API_BASE_URL")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| format!("http://{}:{}", host, port))
+}
+
 fn data_dir() -> PathBuf {
     std::env::var("TELEGRAM_DRIVE_DATA_DIR")
         .map(PathBuf::from)
@@ -37,7 +45,7 @@ fn main() -> std::io::Result<()> {
 
     let host = api_host();
     let port = api_port();
-    let api_base_url = format!("http://{}:{}", host, port);
+    let api_base_url = api_base_url(&host, port);
     let stream_token = generate_stream_token();
 
     let system = actix_rt::System::new();
