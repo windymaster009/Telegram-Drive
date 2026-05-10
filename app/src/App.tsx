@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
+import { Store } from "@tauri-apps/plugin-store";
 import { QRCodeSVG } from "qrcode.react";
 import { Copy, Shield, UserPlus, Users, History, KeyRound, ScanQrCode, HardDrive, LogOut } from "lucide-react";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -25,6 +26,42 @@ import type { TelegramFolder } from "./types";
 import "./App.css";
 
 const queryClient = new QueryClient();
+
+async function loadStoredTelegramFolders() {
+  const foldersById = new Map<number, TelegramFolder>();
+
+  for (const storeName of ["config.json", "settings.json"]) {
+    try {
+      const store = await Store.load(storeName);
+      const folders = await store.get<TelegramFolder[]>("folders");
+      if (!Array.isArray(folders)) continue;
+
+      for (const folder of folders) {
+        if (Number.isFinite(folder.id)) {
+          foldersById.set(folder.id, folder);
+        }
+      }
+    } catch {
+      // Older installs may only have one of these store files.
+    }
+  }
+
+  return Array.from(foldersById.values());
+}
+
+function mergeTelegramFolders(...folderGroups: TelegramFolder[][]) {
+  const foldersById = new Map<number, TelegramFolder>();
+
+  for (const folders of folderGroups) {
+    for (const folder of folders) {
+      foldersById.set(folder.id, folder);
+    }
+  }
+
+  return Array.from(foldersById.values()).sort((a, b) =>
+    a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
+  );
+}
 
 function AppContent() {
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
@@ -566,10 +603,14 @@ function UsersPanel({ csrfToken }: { csrfToken: string | null }) {
   const folderCatalog = useQuery({
     queryKey: ["telegram-folder-catalog"],
     queryFn: async () => {
+      const storedFolders = await loadStoredTelegramFolders();
+
       try {
-        return await invoke<TelegramFolder[]>("cmd_scan_folders");
+        await invoke<boolean>("cmd_check_connection");
+        const scannedFolders = await invoke<TelegramFolder[]>("cmd_scan_folders");
+        return mergeTelegramFolders(storedFolders, scannedFolders);
       } catch {
-        return [];
+        return storedFolders;
       }
     },
     enabled: !!selectedUser,
