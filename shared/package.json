@@ -1,0 +1,6 @@
+{
+  "name": "@telegram-drive/shared",
+  "private": true,
+  "version": "1.1.8",
+  "type": "module"
+}

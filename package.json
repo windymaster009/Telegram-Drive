@@ -1,0 +1,23 @@
+{
+  "name": "telegram-drive",
+  "private": true,
+  "version": "1.1.8",
+  "workspaces": [
+    "frontend",
+    "backend",
+    "shared"
+  ],
+  "scripts": {
+    "dev": "npm run dev:backend",
+    "dev:web": "node scripts/dev.mjs",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:api": "npm --prefix backend run api",
+    "build": "npm run build:frontend && npm run build:backend",
+    "build:frontend": "npm --prefix frontend run build",
+    "build:backend": "npm --prefix backend run build",
+    "tauri": "npm --prefix backend run tauri --",
+    "tauri:dev": "npm --prefix backend run tauri -- dev",
+    "tauri:build": "npm --prefix backend run tauri -- build"
+  }
+}
