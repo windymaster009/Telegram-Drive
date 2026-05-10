@@ -1,0 +1,18 @@
+{
+  "name": "@telegram-drive/backend",
+  "private": true,
+  "version": "1.1.8",
+  "type": "module",
+  "scripts": {
+    "predev": "node scripts/check-tauri-prereqs.mjs",
+    "dev": "node scripts/run-tauri.mjs dev",
+    "api": "cargo run",
+    "prebuild": "node scripts/check-tauri-prereqs.mjs",
+    "build": "node scripts/run-tauri.mjs build",
+    "pretauri": "node scripts/check-tauri-prereqs.mjs",
+    "tauri": "node scripts/run-tauri.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}
