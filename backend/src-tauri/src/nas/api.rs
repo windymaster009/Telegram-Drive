@@ -4,8 +4,7 @@ use serde_json::json;
 use time::Duration;
 
 use super::crypto::{
-    decrypt_secret, encrypt_secret, generate_token, hash_password, now_ts, sha256_hex,
-    verify_password,
+    encrypt_secret, generate_token, hash_password, now_ts, sha256_hex, verify_password,
 };
 use super::db::GoogleUserProfile;
 use super::models::{
@@ -15,6 +14,10 @@ use super::models::{
     UserUpsertRequest,
 };
 use super::state::NasState;
+use crate::commands::auth::{
+    check_password_inner, logout_inner, owner_session_status_inner, request_owner_code_inner,
+    sign_in_inner,
+};
 
 const SESSION_TTL_SECONDS: i64 = 60 * 60 * 24 * 14;
 const QR_TTL_SECONDS: i64 = 60 * 10;
@@ -55,6 +58,10 @@ pub fn configure_api(cfg: &mut web::ServiceConfig) {
         .service(store_owner_config)
         .service(clear_owner_config)
         .service(get_owner_status)
+        .service(request_owner_code)
+        .service(owner_sign_in)
+        .service(owner_check_password)
+        .service(owner_logout)
         .service(list_audit_logs);
 }
 
@@ -112,6 +119,21 @@ struct GoogleDesktopCompleteRequest {
     code: String,
     state: String,
     redirect_uri: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct OwnerCodeRequest {
+    phone: String,
+}
+
+#[derive(serde::Deserialize)]
+struct OwnerSignInRequest {
+    code: String,
+}
+
+#[derive(serde::Deserialize)]
+struct OwnerPasswordRequest {
+    password: String,
 }
 
 #[post("/api/auth/google")]
@@ -1012,19 +1034,85 @@ async fn get_owner_status(state: web::Data<NasState>, req: HttpRequest) -> impl 
         return resp;
     }
 
-    let owner_api_id = match state.db.get_secret("owner_api_id".to_string()).await {
-        Ok(value) => value,
-        Err(err) => return HttpResponse::InternalServerError().json(json!({ "error": err })),
-    };
-    let decrypted_api_id = owner_api_id
-        .as_ref()
-        .and_then(|value| decrypt_secret(value, state.master_key.as_ref()).ok());
+    match owner_session_status_inner(&state).await {
+        Ok(status) => HttpResponse::Ok().json(status),
+        Err(err) => HttpResponse::InternalServerError().json(json!({ "error": err })),
+    }
+}
 
-    HttpResponse::Ok().json(json!({
-        "configured": owner_api_id.is_some(),
-        "api_id": decrypted_api_id,
-        "connected": telegram_session_connected(&state).await
-    }))
+#[post("/api/admin/owner/auth/request-code")]
+async fn request_owner_code(
+    state: web::Data<NasState>,
+    req: HttpRequest,
+    payload: web::Json<OwnerCodeRequest>,
+) -> impl Responder {
+    if let Err(resp) = authorize(&state, &req, true).await {
+        return resp;
+    }
+
+    let phone = payload.phone.trim().replace(' ', "");
+    if phone.is_empty() {
+        return HttpResponse::BadRequest()
+            .json(json!({ "error": "Telegram phone number is required" }));
+    }
+
+    match request_owner_code_inner(&state, phone).await {
+        Ok(status) => HttpResponse::Ok().json(json!({ "status": status })),
+        Err(err) => HttpResponse::BadRequest().json(json!({ "error": err })),
+    }
+}
+
+#[post("/api/admin/owner/auth/sign-in")]
+async fn owner_sign_in(
+    state: web::Data<NasState>,
+    req: HttpRequest,
+    payload: web::Json<OwnerSignInRequest>,
+) -> impl Responder {
+    if let Err(resp) = authorize(&state, &req, true).await {
+        return resp;
+    }
+
+    if payload.code.trim().is_empty() {
+        return HttpResponse::BadRequest().json(json!({ "error": "Telegram code is required" }));
+    }
+
+    match sign_in_inner(state.telegram.as_ref(), payload.code.trim().to_string()).await {
+        Ok(result) => HttpResponse::Ok().json(result),
+        Err(err) => HttpResponse::BadRequest().json(json!({ "error": err })),
+    }
+}
+
+#[post("/api/admin/owner/auth/check-password")]
+async fn owner_check_password(
+    state: web::Data<NasState>,
+    req: HttpRequest,
+    payload: web::Json<OwnerPasswordRequest>,
+) -> impl Responder {
+    if let Err(resp) = authorize(&state, &req, true).await {
+        return resp;
+    }
+
+    if payload.password.is_empty() {
+        return HttpResponse::BadRequest()
+            .json(json!({ "error": "Telegram 2FA password is required" }));
+    }
+
+    match check_password_inner(state.telegram.as_ref(), payload.password.clone()).await {
+        Ok(result) => HttpResponse::Ok().json(result),
+        Err(err) => HttpResponse::BadRequest().json(json!({ "error": err })),
+    }
+}
+
+#[post("/api/admin/owner/auth/logout")]
+async fn owner_logout(state: web::Data<NasState>, req: HttpRequest) -> impl Responder {
+    if let Err(resp) = authorize(&state, &req, true).await {
+        return resp;
+    }
+
+    match logout_inner(state.telegram.as_ref()).await {
+        Ok(ok) => HttpResponse::Ok().json(json!({ "ok": ok })),
+        Err(err) => HttpResponse::InternalServerError().json(json!({ "error": err })),
+    }
 }
 
 async fn telegram_session_connected(state: &NasState) -> bool {

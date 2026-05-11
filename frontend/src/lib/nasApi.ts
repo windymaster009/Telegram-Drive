@@ -1,6 +1,7 @@
 import type {
   AppSession,
   AppUser,
+  AuthResult,
   AuditEntry,
   LoginResponse,
   MeResponse,
@@ -94,9 +95,17 @@ export const nasApi = {
     request<PermissionAssignment[]>(`/api/admin/users/${userId}/permissions`),
   setPermissions: (userId: string, permissions: PermissionAssignment[], csrfToken: string) =>
     request<{ ok: boolean }>(`/api/admin/users/${userId}/permissions`, { method: "PUT", body: JSON.stringify({ permissions }) }, csrfToken),
-  ownerStatus: () => request<{ configured: boolean; api_id?: string; connected: boolean }>("/api/admin/owner/status"),
+  ownerStatus: () => request<{ configured: boolean; api_id?: string | null; connected: boolean; error?: string | null }>("/api/admin/owner/status"),
   saveOwnerConfig: (payload: { api_id: number; api_hash: string }, csrfToken: string) =>
     request<{ ok: boolean }>("/api/admin/owner/config", { method: "POST", body: JSON.stringify(payload) }, csrfToken),
+  requestOwnerCode: (payload: { phone: string }, csrfToken: string) =>
+    request<{ status: string }>("/api/admin/owner/auth/request-code", { method: "POST", body: JSON.stringify(payload) }, csrfToken),
+  ownerSignIn: (payload: { code: string }, csrfToken: string) =>
+    request<AuthResult>("/api/admin/owner/auth/sign-in", { method: "POST", body: JSON.stringify(payload) }, csrfToken),
+  ownerCheckPassword: (payload: { password: string }, csrfToken: string) =>
+    request<AuthResult>("/api/admin/owner/auth/check-password", { method: "POST", body: JSON.stringify(payload) }, csrfToken),
+  ownerLogout: (csrfToken: string) =>
+    request<{ ok: boolean }>("/api/admin/owner/auth/logout", { method: "POST", body: JSON.stringify({}) }, csrfToken),
   clearOwnerConfig: (csrfToken: string) =>
     request<{ ok: boolean }>("/api/admin/owner/config", { method: "DELETE" }, csrfToken),
   listAuditLogs: () => request<AuditEntry[]>("/api/admin/audit-logs"),
