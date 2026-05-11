@@ -29,7 +29,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' http://localhost:14201 http://127.0.0.1:14201; media-src 'self' http://localhost:14201 http://127.0.0.1:14201; img-src 'self' data: blob: asset: https://asset.localhost; style-src 'self' 'unsafe-inline'; script-src 'self'; worker-src 'self' blob:;",
+      "csp": "default-src 'self'; connect-src 'self' http://localhost:14201 http://127.0.0.1:14201 https://api.measnas.uk; media-src 'self' http://localhost:14201 http://127.0.0.1:14201 https://api.measnas.uk; img-src 'self' data: blob: asset: https://asset.localhost; style-src 'self' 'unsafe-inline'; script-src 'self'; worker-src 'self' blob:;",
       "capabilities": [
         "default"
       ]
