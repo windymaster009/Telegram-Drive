@@ -477,6 +477,7 @@ pub async fn request_code_inner(
         return Err("API Hash cannot be empty.".to_string());
     }
 
+    clear_runtime_client_inner(state).await;
     *state.api_id.lock().await = Some(api_id);
 
     let client_handle = ensure_client_initialized_inner(state, api_id).await?;
