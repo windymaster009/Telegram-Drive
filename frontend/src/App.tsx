@@ -22,7 +22,6 @@ import type {
   QrTokenResponse,
   SystemStatus,
 } from "@shared/nas";
-import type { TelegramFolder } from "@shared/telegram";
 import khFlag from "flag-icons/flags/4x3/kh.svg?url";
 import usFlag from "flag-icons/flags/4x3/us.svg?url";
 import vnFlag from "flag-icons/flags/4x3/vn.svg?url";
@@ -106,6 +105,7 @@ function AppContent() {
 
   const finishLogin = (response: { csrf_token: string; access_token: string }) => {
     nasSession.setAccessToken(response.access_token);
+    nasSession.setCsrfToken(response.csrf_token);
     setCsrfToken(response.csrf_token);
     client.invalidateQueries({ queryKey: ["auth-me"] });
     client.invalidateQueries({ queryKey: ["system-status"] });
@@ -116,6 +116,7 @@ function AppContent() {
       await nasApi.logout(csrfToken || undefined);
     } finally {
       nasSession.clearAccessToken();
+      nasSession.clearCsrfToken();
       setCsrfToken(null);
       client.removeQueries({ queryKey: ["auth-me"] });
       client.invalidateQueries({ queryKey: ["system-status"] });
@@ -213,6 +214,7 @@ function AppContent() {
 
   useEffect(() => {
     if (meQuery.data?.csrf_token) {
+      nasSession.setCsrfToken(meQuery.data.csrf_token);
       setCsrfToken(meQuery.data.csrf_token);
     }
   }, [meQuery.data?.csrf_token]);
@@ -713,7 +715,7 @@ function AdminConsole({
 
       <section className="min-h-0 flex-1 overflow-auto p-6">
         {tab === "owner" && <OwnerTelegramPanel csrfToken={csrfToken} onOpenStorage={() => setTab("storage")} />}
-        {tab === "users" && <UsersPanel csrfToken={csrfToken} me={me.user} />}
+        {tab === "users" && <UsersPanel csrfToken={csrfToken} />}
         {tab === "sessions" && <SessionsPanel csrfToken={csrfToken} />}
         {tab === "audit" && <AuditPanel />}
       </section>
@@ -1049,7 +1051,7 @@ function OwnerTelegramPanel({ csrfToken, onOpenStorage }: { csrfToken: string | 
   );
 }
 
-function UsersPanel({ csrfToken, me }: { csrfToken: string | null; me: AppUser }) {
+function UsersPanel({ csrfToken }: { csrfToken: string | null }) {
   const client = useQueryClient();
   const users = useQuery({ queryKey: ["admin-users"], queryFn: nasApi.listUsers, retry: false });
   const [draft, setDraft] = useState<{ username: string; password: string; display_name: string; telegram_username: string; disabled: boolean; role: "admin" | "user" }>({
@@ -1069,21 +1071,7 @@ function UsersPanel({ csrfToken, me }: { csrfToken: string | null; me: AppUser }
   });
   const folderCatalog = useQuery({
     queryKey: ["telegram-folder-catalog"],
-    queryFn: async () => {
-      try {
-        return await invoke<TelegramFolder[]>("cmd_scan_folders", {
-          accessToken: nasSession.getAccessToken(),
-          actor: {
-            userId: me.id,
-            displayName: me.display_name,
-            email: me.email || me.username,
-            role: me.role,
-          },
-        });
-      } catch {
-        return [];
-      }
-    },
+    queryFn: nasApi.scanTelegramFolders,
     enabled: !!selectedUser,
   });
   const [permissionDraft, setPermissionDraft] = useState<PermissionAssignment[]>([]);

@@ -1,9 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { X, File, ChevronLeft, ChevronRight } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';
-import { convertFileSrc } from '@tauri-apps/api/core';
 import type { TelegramFile } from '@shared/telegram';
 import { isImageFile, isTextFile } from '../../utils';
+import { nasApi } from '../../lib/nasApi';
 
 const PREVIEW_CACHE_TTL_MS = 5 * 60 * 1000;
 const PREVIEW_CACHE_MAX_ITEMS = 8;
@@ -138,21 +137,12 @@ export function PreviewModal({ file, onClose, onNext, onPrev, currentIndex, tota
             setLoading(true);
             setError(null);
             try {
-                const path = await invoke<string>('cmd_get_preview', {
-                    messageId: file.id,
-                    folderId: activeFolderId
-                });
                 if (requestId !== latestRequestRef.current) return;
 
-                if (path) {
-                    if (path.startsWith('data:')) {
-                        setSrc(path);
-                        rememberPreview(key, path);
-                    } else {
-                        const converted = convertFileSrc(path);
-                        setSrc(converted);
-                        rememberPreview(key, converted);
-                    }
+                if (isImageFile(file.name)) {
+                    const url = nasApi.streamUrl(activeFolderId, file.id);
+                    setSrc(url);
+                    rememberPreview(key, url);
                 } else {
                     setError("Preview not available");
                 }
@@ -175,18 +165,11 @@ export function PreviewModal({ file, onClose, onNext, onPrev, currentIndex, tota
             if (getCachedPreview(key) || pendingPrefetch.has(key)) return;
 
             pendingPrefetch.add(key);
-            invoke<string>('cmd_get_preview', {
-                messageId: candidate.id,
-                folderId: activeFolderId
-            }).then((path) => {
-                if (!path) return;
-                const normalized = path.startsWith('data:') ? path : convertFileSrc(path);
-                rememberPreview(key, normalized);
-            }).catch(() => {
-                // Ignore prefetch errors, main preview flow will handle user-visible failures.
-            }).finally(() => {
+            try {
+                rememberPreview(key, nasApi.streamUrl(activeFolderId, candidate.id));
+            } finally {
                 pendingPrefetch.delete(key);
-            });
+            }
         });
     }, [nextFile, prevFile, activeFolderId]);
 

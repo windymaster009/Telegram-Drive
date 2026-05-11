@@ -20,12 +20,13 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.13", features = ["form", "json"] }
+reqwest = { version = "0.13", features = ["form", "json", "stream"] }
 grammers-client = { git = "https://github.com/Lonami/grammers", rev = "d07f96f" }
 grammers-session = { git = "https://github.com/Lonami/grammers", rev = "d07f96f", features = ["serde"] }
 grammers-mtsender = { git = "https://github.com/Lonami/grammers", rev = "d07f96f" }
 grammers-tl-types = { git = "https://github.com/Lonami/grammers", rev = "d07f96f" }
 tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
 
 tauri-plugin-store = "2"
 tauri-plugin-window-state = "2"

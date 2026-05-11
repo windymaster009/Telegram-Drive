@@ -7,7 +7,7 @@ import { useConfirm } from '../context/ConfirmContext';
 import type { TelegramFolder } from '@shared/telegram';
 import type { AppUser } from '@shared/nas';
 import { useNetworkStatus } from './useNetworkStatus';
-import { nasSession } from '../lib/nasApi';
+import { nasApi } from '../lib/nasApi';
 
 export function useTelegramConnection(onLogoutParent: () => void, currentUser?: AppUser) {
     const queryClient = useQueryClient();
@@ -34,8 +34,6 @@ export function useTelegramConnection(onLogoutParent: () => void, currentUser?: 
                 setStore(_store);
 
                 const savedFolders = await _store.get<TelegramFolder[]>('folders');
-                if (savedFolders) setFolders(savedFolders);
-
 
                 const savedActiveFolderId = await _store.get<number | null>('activeFolderId');
                 if (currentUser?.role === "user") {
@@ -46,35 +44,34 @@ export function useTelegramConnection(onLogoutParent: () => void, currentUser?: 
                     setActiveFolderId(savedActiveFolderId);
                 }
 
-                const apiIdStr = await _store.get<string>('api_id');
-                if (apiIdStr) {
-                    try {
-                        const apiId = parseInt(apiIdStr as string);
-                        await invoke('cmd_connect', { apiId });
-                        setIsConnected(true);
-                        queryClient.invalidateQueries({ queryKey: ['files'] });
-                    } catch {
-                        const shouldRetry = window.confirm("Failed to connect to Telegram. Retry?");
-                        if (shouldRetry) {
-                            window.location.reload();
-                        } else {
-                            if (_store) {
-                                await _store.delete('api_id');
-                                await _store.save();
+                try {
+                    const { connected } = await nasApi.telegramConnection();
+                    setIsConnected(connected);
+                    if (connected) {
+                        try {
+                            const backendFolders = await nasApi.scanTelegramFolders();
+                            setFolders(backendFolders);
+                            await _store.set('folders', backendFolders);
+                            if (
+                                savedActiveFolderId !== undefined
+                                && savedActiveFolderId !== null
+                                && !backendFolders.some((folder) => folder.id === savedActiveFolderId)
+                            ) {
+                                setActiveFolderId(null);
+                                await _store.set('activeFolderId', null);
                             }
-                            onLogoutParent();
+                            await _store.save();
+                            queryClient.invalidateQueries({ queryKey: ['telegram-folder-catalog'] });
+                        } catch {
+                            if (currentUser?.role !== "user" && savedFolders) setFolders(savedFolders);
                         }
+                        queryClient.invalidateQueries({ queryKey: ['files'] });
+                    } else if (currentUser?.role !== "user" && savedFolders) {
+                        setFolders(savedFolders);
                     }
-                } else {
-                    try {
-                        const connected = await invoke<boolean>('cmd_check_connection');
-                        setIsConnected(connected);
-                        if (connected) {
-                            queryClient.invalidateQueries({ queryKey: ['files'] });
-                        }
-                    } catch {
-                        setIsConnected(false);
-                    }
+                } catch {
+                    setIsConnected(false);
+                    if (currentUser?.role !== "user" && savedFolders) setFolders(savedFolders);
                 }
 
             } catch {
@@ -82,7 +79,7 @@ export function useTelegramConnection(onLogoutParent: () => void, currentUser?: 
             }
         };
         initStore();
-    }, [queryClient, onLogoutParent, currentUser?.role]);
+    }, [queryClient, onLogoutParent, currentUser?.id, currentUser?.role]);
 
 
     useEffect(() => {
@@ -95,7 +92,7 @@ export function useTelegramConnection(onLogoutParent: () => void, currentUser?: 
             }
 
             try {
-                const connected = await invoke<boolean>('cmd_check_connection');
+                const { connected } = await nasApi.telegramConnection();
                 if (!cancelled) setIsConnected(connected);
             } catch {
                 if (!cancelled) setIsConnected(false);
@@ -114,13 +111,6 @@ export function useTelegramConnection(onLogoutParent: () => void, currentUser?: 
         const keywords = ['timeout', 'connection', 'network', 'socket', 'disconnected', 'EOF', 'ECONNREFUSED', 'overflow'];
         return keywords.some(k => error.toLowerCase().includes(k.toLowerCase()));
     };
-
-    const actor = currentUser ? {
-        userId: currentUser.id,
-        displayName: currentUser.display_name,
-        email: currentUser.email || currentUser.username,
-        role: currentUser.role,
-    } : null;
 
     const forceLogout = async () => {
         setIsConnected(false);
@@ -163,20 +153,24 @@ export function useTelegramConnection(onLogoutParent: () => void, currentUser?: 
         if (!store) return;
         setIsSyncing(true);
         try {
-            const foundFolders = await invoke<TelegramFolder[]>('cmd_scan_folders', { accessToken: nasSession.getAccessToken(), actor });
-            const merged = [...folders];
-            let added = 0;
-            for (const f of foundFolders) {
-                if (!merged.find(existing => existing.id === f.id)) {
-                    merged.push(f);
-                    added++;
-                }
+            const foundFolders = await nasApi.scanTelegramFolders();
+            const previousIds = new Set(folders.map((folder) => folder.id));
+            const nextIds = new Set(foundFolders.map((folder) => folder.id));
+            const added = foundFolders.filter((folder) => !previousIds.has(folder.id)).length;
+            const removed = folders.filter((folder) => !nextIds.has(folder.id)).length;
+
+            setFolders(foundFolders);
+            await store.set('folders', foundFolders);
+            if (activeFolderId !== null && !nextIds.has(activeFolderId)) {
+                setActiveFolderId(null);
+                await store.set('activeFolderId', null);
             }
-            if (added > 0) {
-                setFolders(merged);
-                await store.set('folders', merged);
-                await store.save();
-                toast.success(`Scan complete. Found ${added} new folders.`);
+            await store.save();
+            queryClient.invalidateQueries({ queryKey: ['telegram-folder-catalog'] });
+            queryClient.invalidateQueries({ queryKey: ['files'] });
+
+            if (added > 0 || removed > 0) {
+                toast.success(`Scan complete. ${added} added, ${removed} removed.`);
             } else {
                 toast.info("Scan complete. No new folders found.");
             }
@@ -190,13 +184,14 @@ export function useTelegramConnection(onLogoutParent: () => void, currentUser?: 
     const handleCreateFolder = async (name: string) => {
         if (!store) return;
         try {
-            const newFolder = await invoke<TelegramFolder>('cmd_create_folder', { name, accessToken: nasSession.getAccessToken(), actor });
+            const newFolder = await nasApi.createTelegramFolder(name);
             const updated = [...folders, newFolder];
             setFolders(updated);
             await store.set('folders', updated);
             await store.set('activeFolderId', newFolder.id);
             await store.save();
             setActiveFolderId(newFolder.id);
+            queryClient.invalidateQueries({ queryKey: ['telegram-folder-catalog'] });
             toast.success(`Folder "${name}" created.`);
         } catch (e) {
             toast.error("Failed to create folder: " + e);
@@ -213,7 +208,7 @@ export function useTelegramConnection(onLogoutParent: () => void, currentUser?: 
         })) return;
 
         try {
-            await invoke('cmd_delete_folder', { folderId, accessToken: nasSession.getAccessToken(), actor });
+            await nasApi.deleteTelegramFolder(folderId);
             const updated = folders.filter(f => f.id !== folderId);
             setFolders(updated);
             if (store) {
@@ -221,6 +216,7 @@ export function useTelegramConnection(onLogoutParent: () => void, currentUser?: 
                 await store.save();
             }
             if (activeFolderId === folderId) setActiveFolderId(null);
+            queryClient.invalidateQueries({ queryKey: ['telegram-folder-catalog'] });
             toast.success(`Folder "${folderName}" deleted.`);
         } catch (e: unknown) {
             const errStr = String(e);
@@ -238,6 +234,7 @@ export function useTelegramConnection(onLogoutParent: () => void, currentUser?: 
                         await store.save();
                     }
                     if (activeFolderId === folderId) setActiveFolderId(null);
+                    queryClient.invalidateQueries({ queryKey: ['telegram-folder-catalog'] });
                 }
             } else {
                 toast.error(`Failed to delete folder: ${e}`);
@@ -261,6 +258,7 @@ export function useTelegramConnection(onLogoutParent: () => void, currentUser?: 
             await store.set('folders', updated);
             await store.save();
         }
+        queryClient.invalidateQueries({ queryKey: ['telegram-folder-catalog'] });
     };
 
     const handleFolderRename = async (folderId: number, name: string) => {
@@ -270,12 +268,7 @@ export function useTelegramConnection(onLogoutParent: () => void, currentUser?: 
             return;
         }
         try {
-            const folder = await invoke<TelegramFolder>('cmd_rename_folder', {
-                folderId,
-                name: trimmed,
-                accessToken: nasSession.getAccessToken(),
-                actor
-            });
+            const folder = await nasApi.renameTelegramFolder(folderId, trimmed);
             await updateFolderInStore(folder);
             toast.success("Folder renamed.");
         } catch (e) {
@@ -285,12 +278,7 @@ export function useTelegramConnection(onLogoutParent: () => void, currentUser?: 
 
     const handleFolderIconChange = async (folderId: number, icon: string | null) => {
         try {
-            const folder = await invoke<TelegramFolder>('cmd_set_folder_icon', {
-                folderId,
-                icon: icon?.trim() || null,
-                accessToken: nasSession.getAccessToken(),
-                actor
-            });
+            const folder = await nasApi.setTelegramFolderIcon(folderId, icon?.trim() || null);
             await updateFolderInStore(folder);
             toast.success("Folder icon updated.");
         } catch (e) {
@@ -300,14 +288,9 @@ export function useTelegramConnection(onLogoutParent: () => void, currentUser?: 
 
     const handleFolderPassword = async (folderId: number, password: string | null) => {
         try {
-            await invoke('cmd_set_folder_password', {
-                folderId,
-                payload: password?.trim()
-                    ? { password: password.trim() }
-                    : { removePassword: true },
-                accessToken: nasSession.getAccessToken(),
-                actor
-            });
+            await nasApi.setTelegramFolderPassword(folderId, password?.trim()
+                ? { password: password.trim() }
+                : { remove_password: true });
             const current = folders.find((folder) => folder.id === folderId);
             if (current) {
                 await updateFolderInStore({

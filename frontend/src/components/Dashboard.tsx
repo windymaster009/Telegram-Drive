@@ -31,7 +31,7 @@ import { useFileOperations } from '../hooks/useFileOperations';
 import { useFileUpload } from '../hooks/useFileUpload';
 import { useFileDownload } from '../hooks/useFileDownload';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
-import { nasSession } from '../lib/nasApi';
+import { nasApi } from '../lib/nasApi';
 
 interface DashboardProps {
     onLogout: () => void;
@@ -199,10 +199,10 @@ export function Dashboard({ onLogout, permissions, allowFolderManagement = true,
 
     const { data: allFiles = [], isLoading, error } = useQuery({
         queryKey: ['files', activeFolderId],
-        queryFn: () => invoke<any[]>('cmd_get_files', { folderId: activeFolderId }).then(res => res.map(f => ({
+        queryFn: () => nasApi.listTelegramFiles(activeFolderId).then(res => res.map(f => ({
             ...f,
             sizeStr: formatBytes(f.size),
-            type: f.icon_type || (f.name.endsWith('/') ? 'folder' : 'file')
+            type: f.type || (f.name.endsWith('/') ? 'folder' : 'file')
         }))),
         enabled: !!store && hasFolderAccess && activeFolderAllowed && !activeFolderNeedsUnlock,
     });
@@ -433,11 +433,10 @@ export function Dashboard({ onLogout, permissions, allowFolderManagement = true,
             try {
                 const idsToMove = selectedIds.includes(fileId) ? selectedIds : [fileId];
 
-                await invoke('cmd_move_files', {
-                    messageIds: idsToMove,
-                    sourceFolderId: activeFolderId,
-                    targetFolderId: targetFolderId,
-                    accessToken: nasSession.getAccessToken()
+                await nasApi.moveTelegramFiles({
+                    message_ids: idsToMove,
+                    source_folder_id: activeFolderId,
+                    target_folder_id: targetFolderId,
                 });
 
                 queryClient.invalidateQueries({ queryKey: ['files', activeFolderId] });
@@ -493,10 +492,7 @@ export function Dashboard({ onLogout, permissions, allowFolderManagement = true,
 
     const unlockFolder = async (password: string) => {
         if (!folderUnlock) return;
-        const ok = await invoke<boolean>('cmd_verify_folder_password', {
-            folderId: folderUnlock.id,
-            password,
-        });
+        const { ok } = await nasApi.verifyTelegramFolderPassword(folderUnlock.id, password);
         if (!ok) {
             setUnlockError("Incorrect folder password.");
             return;

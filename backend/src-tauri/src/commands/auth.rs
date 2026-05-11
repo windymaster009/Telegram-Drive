@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tauri::State;
 use tokio::sync::oneshot;
-use tokio::time::Duration;
+use tokio::time::{timeout, Duration};
 
 use crate::commands::session::EncryptedSession;
 use crate::commands::utils::map_error;
@@ -110,7 +110,13 @@ pub async fn ensure_client_initialized_inner(
 }
 
 pub async fn clear_runtime_client_inner(state: &TelegramState) {
-    let _init_guard = state.init_lock.lock().await;
+    let _init_guard = match timeout(Duration::from_secs(5), state.init_lock.lock()).await {
+        Ok(guard) => Some(guard),
+        Err(_) => {
+            log::warn!("Timed out waiting for Telegram init lock while clearing runtime client");
+            None
+        }
+    };
 
     {
         let mut shutdown_guard = state.runner_shutdown.lock().unwrap();
@@ -378,14 +384,14 @@ pub async fn owner_session_status_inner(
         None => None,
     };
 
-    match ensure_owner_client_connected(nas_state).await {
-        Ok(Some(_)) => Ok(OwnerSessionStatus {
+    match timeout(Duration::from_secs(25), ensure_owner_client_connected(nas_state)).await {
+        Ok(Ok(Some(_))) => Ok(OwnerSessionStatus {
             configured,
             connected: true,
             api_id,
             error: None,
         }),
-        Ok(None) => Ok(OwnerSessionStatus {
+        Ok(Ok(None)) => Ok(OwnerSessionStatus {
             configured,
             connected: false,
             api_id,
@@ -394,11 +400,20 @@ pub async fn owner_session_status_inner(
                     .to_string(),
             ),
         }),
-        Err(err) => Ok(OwnerSessionStatus {
+        Ok(Err(err)) => Ok(OwnerSessionStatus {
             configured,
             connected: false,
             api_id,
             error: Some(format!("Telegram owner reconnect failed: {}", err)),
+        }),
+        Err(_) => Ok(OwnerSessionStatus {
+            configured,
+            connected: false,
+            api_id,
+            error: Some(
+                "Telegram owner reconnect timed out. The saved session may still be loading; try Sync or check backend logs before requesting a new login code."
+                    .to_string(),
+            ),
         }),
     }
 }
@@ -468,22 +483,39 @@ pub async fn request_code_inner(
         return Err("API Hash cannot be empty.".to_string());
     }
 
+    clear_runtime_client_inner(state).await;
     *state.api_id.lock().await = Some(api_id);
 
-    let client_handle = ensure_client_initialized_inner(state, api_id).await?;
+    let client_handle = match timeout(
+        Duration::from_secs(20),
+        ensure_client_initialized_inner(state, api_id),
+    )
+    .await
+    {
+        Ok(result) => result?,
+        Err(_) => return Err(
+            "Telegram client initialization timed out. Restart the backend service and try again."
+                .to_string(),
+        ),
+    };
 
     log::info!("Requesting code for {}", phone);
 
     let mut last_error = String::new();
 
     for i in 1..=2 {
-        match client_handle.request_login_code(&phone, &api_hash).await {
-            Ok(token) => {
+        match timeout(
+            Duration::from_secs(45),
+            client_handle.request_login_code(&phone, &api_hash),
+        )
+        .await
+        {
+            Ok(Ok(token)) => {
                 let mut token_guard = state.login_token.lock().await;
                 *token_guard = Some(token);
                 return Ok("code_sent".to_string());
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 let err_msg = e.to_string();
                 log::warn!("Error requesting code (Attempt {}): {}", i, err_msg);
 
@@ -499,6 +531,13 @@ pub async fn request_code_inner(
                 }
 
                 return Err(map_error(e));
+            }
+            Err(_) => {
+                log::warn!(
+                    "Telegram login code request timed out after 45 seconds (Attempt {})",
+                    i
+                );
+                last_error = "Telegram login code request timed out. Check Pi internet access, Telegram connectivity, API ID/hash, and server logs.".to_string();
             }
         }
     }
@@ -574,6 +613,7 @@ pub async fn sign_in_inner(state: &TelegramState, code: String) -> Result<AuthRe
 
             match client.is_authorized().await {
                 Ok(true) => {
+                    let _ = client.get_me().await;
                     log::info!("Successfully logged in.");
                     Ok(AuthResult {
                         success: true,
@@ -631,6 +671,7 @@ pub async fn check_password_inner(
     match client.check_password(pw_token, password.as_str()).await {
         Ok(_user) => match client.is_authorized().await {
             Ok(true) => {
+                let _ = client.get_me().await;
                 log::info!("2FA Success.");
                 Ok(AuthResult {
                     success: true,

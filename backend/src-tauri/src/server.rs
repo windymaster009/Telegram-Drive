@@ -1,4 +1,6 @@
 use crate::commands::utils::resolve_peer;
+use crate::nas::crypto::now_ts;
+use crate::nas::models::ApprovalStatus;
 use crate::nas::{api::configure_api, state::NasState};
 use actix_cors::Cors;
 use actix_web::{
@@ -27,6 +29,7 @@ pub struct StreamTokenData {
 #[derive(serde::Deserialize)]
 struct StreamQuery {
     token: Option<String>,
+    access_token: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -53,6 +56,31 @@ async fn stream_media(
     data: web::Data<NasState>,
     token_data: web::Data<StreamTokenData>,
 ) -> impl Responder {
+    stream_media_impl(req, path, query, data, token_data).await
+}
+
+#[route(
+    "/api/telegram/stream/{folder_id}/{message_id}",
+    method = "GET",
+    method = "HEAD"
+)]
+async fn api_stream_media(
+    req: HttpRequest,
+    path: web::Path<(String, i32)>,
+    query: web::Query<StreamQuery>,
+    data: web::Data<NasState>,
+    token_data: web::Data<StreamTokenData>,
+) -> impl Responder {
+    stream_media_impl(req, path, query, data, token_data).await
+}
+
+async fn stream_media_impl(
+    req: HttpRequest,
+    path: web::Path<(String, i32)>,
+    query: web::Query<StreamQuery>,
+    data: web::Data<NasState>,
+    token_data: web::Data<StreamTokenData>,
+) -> impl Responder {
     let (folder_id_str, message_id) = path.into_inner();
 
     // Validate session token. Loopback preview traffic is allowed without matching
@@ -67,6 +95,12 @@ async fn stream_media(
         _ if is_loopback_request(&req) => {
             log::debug!(
                 "Stream request: Allowing loopback preview request for msg {} with missing/stale token",
+                message_id
+            );
+        }
+        _ if authorize_stream_access(&data, query.access_token.as_deref()).await => {
+            log::debug!(
+                "Stream request: NAS session token validated for msg {}",
                 message_id
             );
         }
@@ -193,8 +227,34 @@ async fn stream_media(
                                 log::debug!("Stream request: Starting download for msg {} (mime: {}, size: {})", message_id, mime, size);
 
                                 if size == 0 {
-                                    return HttpResponse::LengthRequired()
-                                        .body("Media size is not available");
+                                    let mut download_iter =
+                                        client.iter_download(&media).chunk_size(STREAM_CHUNK_SIZE);
+                                    let stream = async_stream::stream! {
+                                        loop {
+                                            match timeout(Duration::from_secs(30), download_iter.next()).await {
+                                                Ok(Ok(Some(bytes))) => {
+                                                    yield Ok::<_, actix_web::Error>(web::Bytes::from(bytes));
+                                                },
+                                                Ok(Ok(None)) => break,
+                                                Ok(Err(e)) => {
+                                                    yield Err::<web::Bytes, actix_web::Error>(ErrorBadGateway(format!("Telegram stream error: {}", e)));
+                                                    break;
+                                                },
+                                                Err(_) => {
+                                                    yield Err::<web::Bytes, actix_web::Error>(ErrorGatewayTimeout("Telegram stream timed out"));
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    };
+                                    let mut response = HttpResponse::Ok();
+                                    response
+                                        .insert_header(("Content-Type", mime))
+                                        .insert_header(("Cache-Control", "private, max-age=120"));
+                                    if req.method() == Method::HEAD {
+                                        return response.finish();
+                                    }
+                                    return response.streaming(stream);
                                 }
 
                                 let requested_range = req.headers().get(header::RANGE);
@@ -331,6 +391,22 @@ async fn stream_media(
         );
         HttpResponse::ServiceUnavailable().body("Telegram client not connected")
     }
+}
+
+async fn authorize_stream_access(state: &NasState, token: Option<&str>) -> bool {
+    let Some(token) = token.filter(|value| !value.trim().is_empty()) else {
+        return false;
+    };
+    let Ok(claims) = state.decode_session_jwt(token) else {
+        return false;
+    };
+    let Ok(Some(record)) = state.db.get_session(claims.sid).await else {
+        return false;
+    };
+    !record.disabled
+        && record.session.expires_at >= now_ts()
+        && record.is_approved
+        && record.approval_status == ApprovalStatus::Approved
 }
 
 #[route(
@@ -776,6 +852,7 @@ pub async fn start_server(
             .app_data(token_data.clone())
             .configure(configure_api)
             .service(stream_media)
+            .service(api_stream_media)
             .service(local_preview_media)
     })
     .bind((host.as_str(), port))?
