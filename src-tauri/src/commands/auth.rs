@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tauri::State;
 use tokio::sync::oneshot;
-use tokio::time::Duration;
+use tokio::time::{timeout, Duration};
 
 use crate::commands::session::EncryptedSession;
 use crate::commands::utils::map_error;
@@ -477,13 +477,18 @@ pub async fn request_code_inner(
     let mut last_error = String::new();
 
     for i in 1..=2 {
-        match client_handle.request_login_code(&phone, &api_hash).await {
-            Ok(token) => {
+        match timeout(
+            Duration::from_secs(45),
+            client_handle.request_login_code(&phone, &api_hash),
+        )
+        .await
+        {
+            Ok(Ok(token)) => {
                 let mut token_guard = state.login_token.lock().await;
                 *token_guard = Some(token);
                 return Ok("code_sent".to_string());
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 let err_msg = e.to_string();
                 log::warn!("Error requesting code (Attempt {}): {}", i, err_msg);
 
@@ -499,6 +504,13 @@ pub async fn request_code_inner(
                 }
 
                 return Err(map_error(e));
+            }
+            Err(_) => {
+                log::warn!(
+                    "Telegram login code request timed out after 45 seconds (Attempt {})",
+                    i
+                );
+                last_error = "Telegram login code request timed out. Check Pi internet access, Telegram connectivity, API ID/hash, and server logs.".to_string();
             }
         }
     }
