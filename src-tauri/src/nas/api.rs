@@ -1042,22 +1042,50 @@ async fn store_owner_config(
         Err(err) => return HttpResponse::InternalServerError().json(json!({ "error": err })),
     };
 
-    if let Err(err) = state
-        .db
-        .store_secret("owner_api_id".to_string(), encrypted_api_id)
-        .await
+    log::info!("Saving owner Telegram API ID");
+    match timeout(
+        TokioDuration::from_secs(6),
+        state
+            .db
+            .store_secret("owner_api_id".to_string(), encrypted_api_id),
+    )
+    .await
     {
-        return HttpResponse::InternalServerError().json(json!({ "error": err }));
-    }
-    if let Err(err) = state
-        .db
-        .store_secret("owner_api_hash".to_string(), encrypted_api_hash)
-        .await
-    {
-        return HttpResponse::InternalServerError().json(json!({ "error": err }));
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => return HttpResponse::InternalServerError().json(json!({ "error": err })),
+        Err(_) => {
+            return HttpResponse::GatewayTimeout().json(json!({
+                "error": "Saving Telegram API ID timed out. Check MongoDB connectivity from the Pi."
+            }))
+        }
     }
 
-    clear_runtime_client_inner(state.telegram.as_ref()).await;
+    log::info!("Saving owner Telegram API hash");
+    match timeout(
+        TokioDuration::from_secs(6),
+        state
+            .db
+            .store_secret("owner_api_hash".to_string(), encrypted_api_hash),
+    )
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => return HttpResponse::InternalServerError().json(json!({ "error": err })),
+        Err(_) => return HttpResponse::GatewayTimeout().json(json!({
+            "error": "Saving Telegram API hash timed out. Check MongoDB connectivity from the Pi."
+        })),
+    }
+
+    log::info!("Clearing runtime Telegram client after owner config save");
+    match timeout(
+        TokioDuration::from_secs(5),
+        clear_runtime_client_inner(state.telegram.as_ref()),
+    )
+    .await
+    {
+        Ok(()) => {}
+        Err(_) => log::warn!("Timed out clearing runtime Telegram client after owner config save"),
+    }
     *state.telegram.api_id.lock().await = Some(payload.api_id);
 
     HttpResponse::Ok().json(json!({ "ok": true }))
