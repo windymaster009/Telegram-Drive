@@ -61,6 +61,26 @@ async function request<T>(path: string, init: RequestInit = {}, csrfToken?: stri
   return response.json() as Promise<T>;
 }
 
+async function requestWithTimeout<T>(
+  path: string,
+  init: RequestInit = {},
+  csrfToken?: string,
+  timeoutMs = 65000
+): Promise<T> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await request<T>(path, { ...init, signal: controller.signal }, csrfToken);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("Request timed out. Check the Pi backend logs and try again.");
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 export const nasApi = {
   systemStatus: () => request<SystemStatus>("/api/system/status"),
   bootstrap: (payload: { username: string; password: string; display_name: string }) =>
@@ -146,7 +166,7 @@ export const nasApi = {
   saveOwnerConfig: (payload: { api_id: number; api_hash: string }, csrfToken: string) =>
     request<{ ok: boolean }>("/api/admin/owner/config", { method: "POST", body: JSON.stringify(payload) }, csrfToken),
   requestOwnerCode: (payload: { phone: string }, csrfToken: string) =>
-    request<{ status: string }>("/api/admin/owner/auth/request-code", { method: "POST", body: JSON.stringify(payload) }, csrfToken),
+    requestWithTimeout<{ status: string }>("/api/admin/owner/auth/request-code", { method: "POST", body: JSON.stringify(payload) }, csrfToken),
   ownerSignIn: (payload: { code: string }, csrfToken: string) =>
     request<AuthResult>("/api/admin/owner/auth/sign-in", { method: "POST", body: JSON.stringify(payload) }, csrfToken),
   ownerCheckPassword: (payload: { password: string }, csrfToken: string) =>

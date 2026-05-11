@@ -3,6 +3,7 @@ use actix_web::{delete, get, http::header, post, put, web, HttpRequest, HttpResp
 use futures::StreamExt;
 use serde_json::json;
 use time::Duration;
+use tokio::time::{timeout, Duration as TokioDuration};
 
 use super::crypto::{
     encrypt_secret, generate_token, hash_password, now_ts, sha256_hex, verify_password,
@@ -25,6 +26,7 @@ use crate::commands::fs::{
     set_folder_icon_inner, set_folder_password_inner, upload_file_inner,
     verify_folder_password_inner, FolderPasswordUpdate,
 };
+use crate::models::FolderMetadata;
 
 const SESSION_TTL_SECONDS: i64 = 60 * 60 * 24 * 14;
 const QR_TTL_SECONDS: i64 = 60 * 10;
@@ -1126,9 +1128,17 @@ async fn request_owner_code(
             .json(json!({ "error": "Telegram phone number is required" }));
     }
 
-    match request_owner_code_inner(&state, phone).await {
-        Ok(status) => HttpResponse::Ok().json(json!({ "status": status })),
-        Err(err) => HttpResponse::BadRequest().json(json!({ "error": err })),
+    match timeout(
+        TokioDuration::from_secs(60),
+        request_owner_code_inner(&state, phone),
+    )
+    .await
+    {
+        Err(_) => HttpResponse::GatewayTimeout().json(json!({
+            "error": "Telegram code request timed out after 60 seconds. Check Pi Telegram connectivity and backend logs, then try again."
+        })),
+        Ok(Ok(status)) => HttpResponse::Ok().json(json!({ "status": status })),
+        Ok(Err(err)) => HttpResponse::BadRequest().json(json!({ "error": err })),
     }
 }
 
@@ -1230,6 +1240,31 @@ async fn scan_telegram_folders(state: web::Data<NasState>, req: HttpRequest) -> 
         Ok(None) => return HttpResponse::Unauthorized().json(json!({ "error": "Unknown user" })),
         Err(err) => return HttpResponse::InternalServerError().json(json!({ "error": err })),
     };
+
+    if user.role != AppRole::Admin {
+        let folders: Vec<FolderMetadata> = match state.db.get_permissions(user.id.clone()).await {
+            Ok(permissions) => permissions
+                .into_iter()
+                .filter_map(|permission| {
+                    let id = permission.folder_id.parse::<i64>().ok()?;
+                    Some(FolderMetadata {
+                        id,
+                        parent_id: None,
+                        name: permission.folder_label,
+                        icon: permission.icon,
+                        owner_id: permission.owner_id,
+                        owner_name: permission.owner_name,
+                        is_password_protected: permission.is_password_protected,
+                        can_manage: permission.can_manage,
+                        created_at: None,
+                        updated_at: None,
+                    })
+                })
+                .collect(),
+            Err(err) => return HttpResponse::InternalServerError().json(json!({ "error": err })),
+        };
+        return HttpResponse::Ok().json(folders);
+    }
 
     if let Err(err) = ensure_owner_client_connected(&state).await {
         return HttpResponse::InternalServerError().json(json!({ "error": err }));
