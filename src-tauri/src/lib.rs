@@ -250,8 +250,9 @@ pub fn run() {
             });
 
             if use_external_backend() {
-                log::info!("Using external backend API; embedded Actix server is disabled.");
-                return Ok(());
+                log::info!(
+                    "Using external backend API for frontend requests; keeping local Actix helper server enabled for media previews."
+                );
             }
 
             // Start Streaming Server on dedicated thread (Actix needs its own runtime)
