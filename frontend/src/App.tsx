@@ -23,7 +23,6 @@ import type {
   QrTokenResponse,
   SystemStatus,
 } from "@shared/nas";
-import type { TelegramFolder } from "@shared/telegram";
 import khFlag from "flag-icons/flags/4x3/kh.svg?url";
 import usFlag from "flag-icons/flags/4x3/us.svg?url";
 import vnFlag from "flag-icons/flags/4x3/vn.svg?url";
@@ -88,13 +87,6 @@ type CountryOption = {
   flagSrc: string;
 };
 
-type OwnerSessionStatus = {
-  configured: boolean;
-  connected: boolean;
-  api_id?: string | null;
-  error?: string | null;
-};
-
 const PHONE_COUNTRIES: CountryOption[] = [
   { iso: "KH", name: "Cambodia", dialCode: "+855", flagSrc: khFlag },
   { iso: "US", name: "United States", dialCode: "+1", flagSrc: usFlag },
@@ -156,6 +148,7 @@ function AppContent() {
 
   const finishLogin = (response: { csrf_token: string; access_token: string }) => {
     nasSession.setAccessToken(response.access_token);
+    nasSession.setCsrfToken(response.csrf_token);
     setCsrfToken(response.csrf_token);
     client.invalidateQueries({ queryKey: ["auth-me"] });
     client.invalidateQueries({ queryKey: ["system-status"] });
@@ -166,6 +159,7 @@ function AppContent() {
       await nasApi.logout(csrfToken || undefined);
     } finally {
       nasSession.clearAccessToken();
+      nasSession.clearCsrfToken();
       setCsrfToken(null);
       client.removeQueries({ queryKey: ["auth-me"] });
       client.invalidateQueries({ queryKey: ["system-status"] });
@@ -263,6 +257,7 @@ function AppContent() {
 
   useEffect(() => {
     if (meQuery.data?.csrf_token) {
+      nasSession.setCsrfToken(meQuery.data.csrf_token);
       setCsrfToken(meQuery.data.csrf_token);
     }
   }, [meQuery.data?.csrf_token]);
@@ -714,7 +709,7 @@ function AdminConsole({
   const [tab, setTab] = useState<"owner" | "users" | "sessions" | "audit" | "storage">("owner");
   const ownerSessionQuery = useQuery({
     queryKey: ["owner-status"],
-    queryFn: () => invoke<OwnerSessionStatus>("cmd_owner_session_status"),
+    queryFn: nasApi.ownerStatus,
     retry: false,
   });
   const ownerConnected = ownerSessionQuery.data?.connected ?? systemStatus.owner_connected;
@@ -766,7 +761,7 @@ function AdminConsole({
 
       <section className="min-h-0 flex-1 overflow-auto p-6">
         {tab === "owner" && <OwnerTelegramPanel csrfToken={csrfToken} onOpenStorage={() => setTab("storage")} />}
-        {tab === "users" && <UsersPanel csrfToken={csrfToken} me={me.user} />}
+        {tab === "users" && <UsersPanel csrfToken={csrfToken} />}
         {tab === "sessions" && <SessionsPanel csrfToken={csrfToken} />}
         {tab === "audit" && <AuditPanel />}
       </section>
@@ -789,7 +784,7 @@ function OwnerTelegramPanel({ csrfToken, onOpenStorage }: { csrfToken: string | 
   const [ownerActionLoading, setOwnerActionLoading] = useState(false);
   const ownerStatus = useQuery({
     queryKey: ["owner-status"],
-    queryFn: () => invoke<OwnerSessionStatus>("cmd_owner_session_status"),
+    queryFn: nasApi.ownerStatus,
     retry: false,
   });
   const ownerConfigured = Boolean(ownerStatus.data?.configured);
@@ -801,7 +796,7 @@ function OwnerTelegramPanel({ csrfToken, onOpenStorage }: { csrfToken: string | 
     if (!ownerConfigured || ownerStatus.data?.connected || checkingSavedSession || checkedSavedSession) return;
 
     setCheckingSavedSession(true);
-    invoke<OwnerSessionStatus>("cmd_owner_session_status")
+    nasApi.ownerStatus()
       .then(async (connected) => {
         if (connected.connected) {
           await ownerStatus.refetch();
@@ -850,10 +845,12 @@ function OwnerTelegramPanel({ csrfToken, onOpenStorage }: { csrfToken: string | 
       }
 
       if (ownerConfigured && !hasCredentialDraft) {
-        await invoke("cmd_auth_request_owner_code", { phone: normalizedPhone });
+        if (!csrfToken) throw new Error("Admin session is missing. Sign out and sign in again.");
+        await nasApi.requestOwnerCode({ phone: normalizedPhone }, csrfToken);
       } else {
         await saveOwnerConfig();
-        await invoke("cmd_auth_request_code", { phone: normalizedPhone, apiId: Number(apiId), apiHash });
+        if (!csrfToken) throw new Error("Admin session is missing. Sign out and sign in again.");
+        await nasApi.requestOwnerCode({ phone: normalizedPhone }, csrfToken);
       }
       setStep("code");
       setOwnerConnectionError("");
@@ -871,7 +868,8 @@ function OwnerTelegramPanel({ csrfToken, onOpenStorage }: { csrfToken: string | 
     if (ownerActionLoading) return;
     setOwnerActionLoading(true);
     try {
-      const response = await invoke<{ success: boolean; next_step?: string }>("cmd_auth_sign_in", { code });
+      if (!csrfToken) throw new Error("Admin session is missing. Sign out and sign in again.");
+      const response = await nasApi.ownerSignIn({ code }, csrfToken);
       if (response.success) {
         toast.success("Owner Telegram session connected");
         await ownerStatus.refetch();
@@ -894,12 +892,15 @@ function OwnerTelegramPanel({ csrfToken, onOpenStorage }: { csrfToken: string | 
     if (ownerActionLoading) return;
     setOwnerActionLoading(true);
     try {
-      await invoke("cmd_auth_check_password", { password });
-      toast.success("Owner Telegram session connected");
-      await ownerStatus.refetch();
-      client.invalidateQueries({ queryKey: ["system-status"] });
-      client.invalidateQueries({ queryKey: ["auth-me"] });
-      setOwnerConnectionError("");
+      if (!csrfToken) throw new Error("Admin session is missing. Sign out and sign in again.");
+      const response = await nasApi.ownerCheckPassword({ password }, csrfToken);
+      if (response.success) {
+        toast.success("Owner Telegram session connected");
+        await ownerStatus.refetch();
+        client.invalidateQueries({ queryKey: ["system-status"] });
+        client.invalidateQueries({ queryKey: ["auth-me"] });
+        setOwnerConnectionError("");
+      }
     } catch (error) {
       const message = ownerErrorMessage(error);
       setOwnerConnectionError(message);
@@ -911,7 +912,8 @@ function OwnerTelegramPanel({ csrfToken, onOpenStorage }: { csrfToken: string | 
 
   const killTelegramSession = async () => {
     try {
-      await invoke("cmd_logout");
+      if (!csrfToken) throw new Error("Admin session is missing. Sign out and sign in again.");
+      await nasApi.ownerLogout(csrfToken);
       setStep("config");
       setCode("");
       setPassword("");
@@ -1095,7 +1097,7 @@ function OwnerTelegramPanel({ csrfToken, onOpenStorage }: { csrfToken: string | 
   );
 }
 
-function UsersPanel({ csrfToken, me }: { csrfToken: string | null; me: AppUser }) {
+function UsersPanel({ csrfToken }: { csrfToken: string | null }) {
   const client = useQueryClient();
   const users = useQuery({ queryKey: ["admin-users"], queryFn: nasApi.listUsers, retry: false });
   const [draft, setDraft] = useState<{ username: string; password: string; display_name: string; telegram_username: string; disabled: boolean; role: "admin" | "user" }>({

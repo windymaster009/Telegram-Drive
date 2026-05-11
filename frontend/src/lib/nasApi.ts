@@ -1,6 +1,7 @@
 import type {
   AppSession,
   AppUser,
+  AuthResult,
   AuditEntry,
   LoginResponse,
   MeResponse,
@@ -8,6 +9,7 @@ import type {
   QrTokenResponse,
   SystemStatus,
 } from "@shared/nas";
+import type { TelegramFile, TelegramFolder } from "@shared/telegram";
 
 export const getApiBaseUrl = () => {
   const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL;
@@ -22,6 +24,7 @@ export const getApiBaseUrl = () => {
 };
 
 const TOKEN_STORAGE_KEY = "telegram_drive_access_token";
+const CSRF_STORAGE_KEY = "telegram_drive_csrf_token";
 
 export type GoogleDesktopLoginStatus =
   | { status: "pending" }
@@ -32,12 +35,16 @@ export const nasSession = {
   getAccessToken: () => localStorage.getItem(TOKEN_STORAGE_KEY),
   setAccessToken: (token: string) => localStorage.setItem(TOKEN_STORAGE_KEY, token),
   clearAccessToken: () => localStorage.removeItem(TOKEN_STORAGE_KEY),
+  getCsrfToken: () => localStorage.getItem(CSRF_STORAGE_KEY),
+  setCsrfToken: (token: string) => localStorage.setItem(CSRF_STORAGE_KEY, token),
+  clearCsrfToken: () => localStorage.removeItem(CSRF_STORAGE_KEY),
 };
 
 async function request<T>(path: string, init: RequestInit = {}, csrfToken?: string): Promise<T> {
   const headers = new Headers(init.headers || {});
   headers.set("Content-Type", "application/json");
-  if (csrfToken) headers.set("x-csrf-token", csrfToken);
+  const csrf = csrfToken || nasSession.getCsrfToken();
+  if (csrf) headers.set("x-csrf-token", csrf);
   const accessToken = nasSession.getAccessToken();
   if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`);
 
@@ -52,6 +59,35 @@ async function request<T>(path: string, init: RequestInit = {}, csrfToken?: stri
     throw new Error(body.error || response.statusText);
   }
   return response.json() as Promise<T>;
+}
+
+async function requestWithTimeout<T>(
+  path: string,
+  init: RequestInit = {},
+  csrfToken?: string,
+  timeoutMs = 65000
+): Promise<T> {
+  const controller = new AbortController();
+  let timeoutId: number | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = window.setTimeout(() => {
+      controller.abort();
+      reject(new Error("Request timed out. Check the Pi backend logs and try again."));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([
+      request<T>(path, { ...init, signal: controller.signal }, csrfToken),
+      timeoutPromise,
+    ]);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("Request timed out. Check the Pi backend logs and try again.");
+    }
+    throw error;
+  } finally {
+    if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+  }
 }
 
 export const nasApi = {
@@ -69,6 +105,47 @@ export const nasApi = {
   logout: (csrfToken?: string) =>
     request<{ ok: boolean }>("/api/auth/logout", { method: "POST", body: JSON.stringify({}) }, csrfToken),
   me: () => request<MeResponse>("/api/auth/me"),
+  telegramConnection: () => request<{ connected: boolean }>("/api/telegram/connection"),
+  streamUrl: (folderId: number | null, messageId: number) => {
+    const folder = folderId === null ? "home" : String(folderId);
+    const params = new URLSearchParams();
+    const accessToken = nasSession.getAccessToken();
+    if (accessToken) params.set("access_token", accessToken);
+    return `${getApiBaseUrl()}/api/telegram/stream/${encodeURIComponent(folder)}/${encodeURIComponent(String(messageId))}?${params.toString()}`;
+  },
+  listTelegramFiles: (folderId: number | null) => {
+    const params = new URLSearchParams();
+    if (folderId !== null) params.set("folder_id", String(folderId));
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return request<TelegramFile[]>(`/api/telegram/files${suffix}`);
+  },
+  scanTelegramFolders: () => request<TelegramFolder[]>("/api/telegram/folders/scan"),
+  createTelegramFolder: (name: string) =>
+    request<TelegramFolder>("/api/telegram/folders", { method: "POST", body: JSON.stringify({ name }) }),
+  deleteTelegramFolder: (folderId: number) =>
+    request<{ ok: boolean }>(`/api/telegram/folders/${folderId}`, { method: "DELETE" }),
+  renameTelegramFolder: (folderId: number, name: string) =>
+    request<TelegramFolder>(`/api/telegram/folders/${folderId}/name`, { method: "PUT", body: JSON.stringify({ name }) }),
+  setTelegramFolderIcon: (folderId: number, icon: string | null) =>
+    request<TelegramFolder>(`/api/telegram/folders/${folderId}/icon`, { method: "PUT", body: JSON.stringify({ icon }) }),
+  setTelegramFolderPassword: (folderId: number, payload: { password?: string; remove_password?: boolean }) =>
+    request<{ ok: boolean }>(`/api/telegram/folders/${folderId}/password`, { method: "PUT", body: JSON.stringify(payload) }),
+  verifyTelegramFolderPassword: (folderId: number, password: string) =>
+    request<{ ok: boolean }>(`/api/telegram/folders/${folderId}/verify-password`, { method: "POST", body: JSON.stringify({ password }) }),
+  deleteTelegramFile: (messageId: number, folderId: number | null) => {
+    const params = new URLSearchParams();
+    if (folderId !== null) params.set("folder_id", String(folderId));
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return request<{ ok: boolean }>(`/api/telegram/files/${messageId}${suffix}`, { method: "DELETE" });
+  },
+  moveTelegramFiles: (payload: { message_ids: number[]; source_folder_id: number | null; target_folder_id: number | null }) =>
+    request<{ ok: boolean }>("/api/telegram/files/move", { method: "POST", body: JSON.stringify(payload) }),
+  copyTelegramFiles: (payload: { message_ids: number[]; source_folder_id: number | null; target_folder_id: number | null }) =>
+    request<{ ok: boolean }>("/api/telegram/files/copy", { method: "POST", body: JSON.stringify(payload) }),
+  searchTelegramFiles: (query: string) => {
+    const params = new URLSearchParams({ query });
+    return request<TelegramFile[]>(`/api/telegram/search?${params.toString()}`);
+  },
   requestQr: (payload: { identifier: string }) =>
     request<QrTokenResponse>("/api/auth/qr/request", { method: "POST", body: JSON.stringify(payload) }),
   qrStatus: (token: string) =>
@@ -94,9 +171,17 @@ export const nasApi = {
     request<PermissionAssignment[]>(`/api/admin/users/${userId}/permissions`),
   setPermissions: (userId: string, permissions: PermissionAssignment[], csrfToken: string) =>
     request<{ ok: boolean }>(`/api/admin/users/${userId}/permissions`, { method: "PUT", body: JSON.stringify({ permissions }) }, csrfToken),
-  ownerStatus: () => request<{ configured: boolean; api_id?: string; connected: boolean }>("/api/admin/owner/status"),
+  ownerStatus: () => request<{ configured: boolean; api_id?: string | null; connected: boolean; error?: string | null }>("/api/admin/owner/status"),
   saveOwnerConfig: (payload: { api_id: number; api_hash: string }, csrfToken: string) =>
-    request<{ ok: boolean }>("/api/admin/owner/config", { method: "POST", body: JSON.stringify(payload) }, csrfToken),
+    requestWithTimeout<{ ok: boolean }>("/api/admin/owner/config", { method: "POST", body: JSON.stringify(payload) }, csrfToken, 20000),
+  requestOwnerCode: (payload: { phone: string }, csrfToken: string) =>
+    requestWithTimeout<{ status: string }>("/api/admin/owner/auth/request-code", { method: "POST", body: JSON.stringify(payload) }, csrfToken),
+  ownerSignIn: (payload: { code: string }, csrfToken: string) =>
+    request<AuthResult>("/api/admin/owner/auth/sign-in", { method: "POST", body: JSON.stringify(payload) }, csrfToken),
+  ownerCheckPassword: (payload: { password: string }, csrfToken: string) =>
+    request<AuthResult>("/api/admin/owner/auth/check-password", { method: "POST", body: JSON.stringify(payload) }, csrfToken),
+  ownerLogout: (csrfToken: string) =>
+    request<{ ok: boolean }>("/api/admin/owner/auth/logout", { method: "POST", body: JSON.stringify({}) }, csrfToken),
   clearOwnerConfig: (csrfToken: string) =>
     request<{ ok: boolean }>("/api/admin/owner/config", { method: "DELETE" }, csrfToken),
   listAuditLogs: () => request<AuditEntry[]>("/api/admin/audit-logs"),

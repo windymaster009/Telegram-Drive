@@ -3,7 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { useConfirm } from '../context/ConfirmContext';
 import type { TelegramFile } from '@shared/telegram';
-import { nasSession } from '../lib/nasApi';
+import { getApiBaseUrl, nasApi, nasSession } from '../lib/nasApi';
 
 const TEXT_MESSAGES_FILE_ID = -1;
 
@@ -24,7 +24,7 @@ export function useFileOperations(
         }
         if (!await confirm({ title: "Delete File", message: "Are you sure you want to delete this file?", confirmText: "Delete", variant: 'danger' })) return;
         try {
-            await invoke('cmd_delete_file', { messageId: id, folderId: activeFolderId, accessToken: nasSession.getAccessToken() });
+            await nasApi.deleteTelegramFile(id, activeFolderId);
             queryClient.invalidateQueries({ queryKey: ['files', activeFolderId] });
             toast.success("File deleted");
         } catch (e) {
@@ -45,7 +45,7 @@ export function useFileOperations(
         let fail = 0;
         for (const id of deletableIds) {
             try {
-                    await invoke('cmd_delete_file', { messageId: id, folderId: activeFolderId, accessToken: nasSession.getAccessToken() });
+                    await nasApi.deleteTelegramFile(id, activeFolderId);
                 success++;
             } catch {
                 fail++;
@@ -64,7 +64,13 @@ export function useFileOperations(
             }));
             if (!savePath) return;
             toast.info(`Download started: ${name}`);
-            await invoke('cmd_download_file', { messageId: id, savePath, folderId: activeFolderId });
+            await invoke('cmd_download_file_from_api', {
+                messageId: id,
+                savePath,
+                folderId: activeFolderId,
+                apiBaseUrl: getApiBaseUrl(),
+                accessToken: nasSession.getAccessToken(),
+            });
             toast.success(`Download complete: ${name}`);
         } catch (e) {
             toast.error(`Download failed: ${e}`);
@@ -85,7 +91,13 @@ export function useFileOperations(
             for (const file of targetFiles) {
                 const filePath = `${dirPath}/${file.name}`;
                 try {
-                    await invoke('cmd_download_file', { messageId: file.id, savePath: filePath, folderId: activeFolderId });
+                    await invoke('cmd_download_file_from_api', {
+                        messageId: file.id,
+                        savePath: filePath,
+                        folderId: activeFolderId,
+                        apiBaseUrl: getApiBaseUrl(),
+                        accessToken: nasSession.getAccessToken(),
+                    });
                     successCount++;
                 } catch (e) { }
             }
@@ -104,11 +116,10 @@ export function useFileOperations(
             return;
         }
         try {
-            await invoke('cmd_move_files', {
-                messageIds: movableIds,
-                sourceFolderId: activeFolderId,
-                targetFolderId: targetFolderId,
-                accessToken: nasSession.getAccessToken()
+            await nasApi.moveTelegramFiles({
+                message_ids: movableIds,
+                source_folder_id: activeFolderId,
+                target_folder_id: targetFolderId,
             });
             toast.success(`Moved ${movableIds.length} files.`);
             queryClient.invalidateQueries({ queryKey: ['files', activeFolderId] });
@@ -127,11 +138,10 @@ export function useFileOperations(
             return;
         }
         try {
-            await invoke('cmd_copy_files', {
-                messageIds: copyableIds,
-                sourceFolderId: activeFolderId,
-                targetFolderId: targetFolderId,
-                accessToken: nasSession.getAccessToken()
+            await nasApi.copyTelegramFiles({
+                message_ids: copyableIds,
+                source_folder_id: activeFolderId,
+                target_folder_id: targetFolderId,
             });
             toast.success(`Copied ${copyableIds.length} files.`);
             queryClient.invalidateQueries({ queryKey: ['files', targetFolderId] });
@@ -157,7 +167,13 @@ export function useFileOperations(
             for (const file of displayedFiles) {
                 const filePath = `${dirPath}/${file.name}`;
                 try {
-                    await invoke('cmd_download_file', { messageId: file.id, savePath: filePath, folderId: activeFolderId });
+                    await invoke('cmd_download_file_from_api', {
+                        messageId: file.id,
+                        savePath: filePath,
+                        folderId: activeFolderId,
+                        apiBaseUrl: getApiBaseUrl(),
+                        accessToken: nasSession.getAccessToken(),
+                    });
                     successCount++;
                 } catch (e) { }
             }
@@ -177,7 +193,7 @@ export function useFileOperations(
         handleDownloadFolder,
         handleGlobalSearch: async (query: string) => {
             try {
-                return await invoke<TelegramFile[]>('cmd_search_global', { query });
+                return await nasApi.searchTelegramFiles(query);
             } catch {
                 return [];
             }

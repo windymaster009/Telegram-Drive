@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tauri::State;
 use tokio::sync::oneshot;
-use tokio::time::Duration;
+use tokio::time::{timeout, Duration};
 
 use crate::commands::session::EncryptedSession;
 use crate::commands::utils::map_error;
@@ -109,8 +109,14 @@ pub async fn ensure_client_initialized_inner(
     Ok(client)
 }
 
-async fn clear_runtime_client_inner(state: &TelegramState) {
-    let _init_guard = state.init_lock.lock().await;
+pub async fn clear_runtime_client_inner(state: &TelegramState) {
+    let _init_guard = match timeout(Duration::from_secs(5), state.init_lock.lock()).await {
+        Ok(guard) => Some(guard),
+        Err(_) => {
+            log::warn!("Timed out waiting for Telegram init lock while clearing runtime client");
+            None
+        }
+    };
 
     {
         let mut shutdown_guard = state.runner_shutdown.lock().unwrap();
@@ -320,11 +326,8 @@ pub struct OwnerSessionStatus {
     error: Option<String>,
 }
 
-#[tauri::command]
-pub async fn cmd_owner_session_status(
-    _app_handle: tauri::AppHandle,
-    _telegram_state: State<'_, TelegramState>,
-    nas_state: State<'_, NasState>,
+pub async fn owner_session_status_inner(
+    nas_state: &NasState,
 ) -> Result<OwnerSessionStatus, String> {
     let configured = nas_state
         .db
@@ -381,14 +384,14 @@ pub async fn cmd_owner_session_status(
         None => None,
     };
 
-    match ensure_owner_client_connected(nas_state.inner()).await {
-        Ok(Some(_)) => Ok(OwnerSessionStatus {
+    match timeout(Duration::from_secs(25), ensure_owner_client_connected(nas_state)).await {
+        Ok(Ok(Some(_))) => Ok(OwnerSessionStatus {
             configured,
             connected: true,
             api_id,
             error: None,
         }),
-        Ok(None) => Ok(OwnerSessionStatus {
+        Ok(Ok(None)) => Ok(OwnerSessionStatus {
             configured,
             connected: false,
             api_id,
@@ -397,15 +400,31 @@ pub async fn cmd_owner_session_status(
                     .to_string(),
             ),
         }),
-        Err(err) => {
-            Ok(OwnerSessionStatus {
-                configured,
-                connected: false,
-                api_id,
-                error: Some(format!("Telegram owner reconnect failed: {}", err)),
-            })
-        }
+        Ok(Err(err)) => Ok(OwnerSessionStatus {
+            configured,
+            connected: false,
+            api_id,
+            error: Some(format!("Telegram owner reconnect failed: {}", err)),
+        }),
+        Err(_) => Ok(OwnerSessionStatus {
+            configured,
+            connected: false,
+            api_id,
+            error: Some(
+                "Telegram owner reconnect timed out. The saved session may still be loading; try Sync or check backend logs before requesting a new login code."
+                    .to_string(),
+            ),
+        }),
     }
+}
+
+#[tauri::command]
+pub async fn cmd_owner_session_status(
+    _app_handle: tauri::AppHandle,
+    _telegram_state: State<'_, TelegramState>,
+    nas_state: State<'_, NasState>,
+) -> Result<OwnerSessionStatus, String> {
+    owner_session_status_inner(nas_state.inner()).await
 }
 
 #[tauri::command]
@@ -413,6 +432,10 @@ pub async fn cmd_logout(
     _app_handle: tauri::AppHandle,
     state: State<'_, TelegramState>,
 ) -> Result<bool, String> {
+    logout_inner(state.inner()).await
+}
+
+pub async fn logout_inner(state: &TelegramState) -> Result<bool, String> {
     log::info!("Logging out...");
 
     // 1. Shutdown the network runner FIRST to prevent any operations
@@ -450,53 +473,71 @@ pub async fn cmd_logout(
     Ok(true)
 }
 
-#[tauri::command]
-pub async fn cmd_auth_request_code(
-    app_handle: tauri::AppHandle,
+pub async fn request_code_inner(
+    state: &TelegramState,
     phone: String,
     api_id: i32,
     api_hash: String,
-    state: State<'_, TelegramState>,
 ) -> Result<String, String> {
     if api_hash.trim().is_empty() {
         return Err("API Hash cannot be empty.".to_string());
     }
 
-    // Store API ID
+    clear_runtime_client_inner(state).await;
     *state.api_id.lock().await = Some(api_id);
 
-    let client_handle = ensure_client_initialized(&app_handle, &state, api_id).await?;
+    let client_handle = match timeout(
+        Duration::from_secs(20),
+        ensure_client_initialized_inner(state, api_id),
+    )
+    .await
+    {
+        Ok(result) => result?,
+        Err(_) => return Err(
+            "Telegram client initialization timed out. Restart the backend service and try again."
+                .to_string(),
+        ),
+    };
 
     log::info!("Requesting code for {}", phone);
 
     let mut last_error = String::new();
 
-    // Retry up to 2 times for AUTH_RESTART or 500
     for i in 1..=2 {
-        match client_handle.request_login_code(&phone, &api_hash).await {
-            Ok(token) => {
+        match timeout(
+            Duration::from_secs(45),
+            client_handle.request_login_code(&phone, &api_hash),
+        )
+        .await
+        {
+            Ok(Ok(token)) => {
                 let mut token_guard = state.login_token.lock().await;
                 *token_guard = Some(token);
                 return Ok("code_sent".to_string());
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 let err_msg = e.to_string();
                 log::warn!("Error requesting code (Attempt {}): {}", i, err_msg);
 
                 if err_msg.contains("CONNECTION_API_ID_INVALID") {
-                    clear_runtime_client(&state).await;
+                    clear_runtime_client_inner(state).await;
                     return Err("Telegram API ID is invalid. Check that TELEGRAM_API_ID and TELEGRAM_API_HASH are from the same app on my.telegram.org, then kill the old Telegram session and request a new code.".to_string());
                 }
 
                 if err_msg.contains("AUTH_RESTART") || err_msg.contains("500") {
                     log::info!("AUTH_RESTART error detected. Retrying...");
                     last_error = err_msg;
-                    // Prepare for retry
                     continue;
                 }
 
-                // Other errors, fail immediately
                 return Err(map_error(e));
+            }
+            Err(_) => {
+                log::warn!(
+                    "Telegram login code request timed out after 45 seconds (Attempt {})",
+                    i
+                );
+                last_error = "Telegram login code request timed out. Check Pi internet access, Telegram connectivity, API ID/hash, and server logs.".to_string();
             }
         }
     }
@@ -505,11 +546,20 @@ pub async fn cmd_auth_request_code(
 }
 
 #[tauri::command]
-pub async fn cmd_auth_request_owner_code(
+pub async fn cmd_auth_request_code(
     app_handle: tauri::AppHandle,
     phone: String,
-    telegram_state: State<'_, TelegramState>,
-    nas_state: State<'_, NasState>,
+    api_id: i32,
+    api_hash: String,
+    state: State<'_, TelegramState>,
+) -> Result<String, String> {
+    let _ = app_handle;
+    request_code_inner(state.inner(), phone, api_id, api_hash).await
+}
+
+pub async fn request_owner_code_inner(
+    nas_state: &NasState,
+    phone: String,
 ) -> Result<String, String> {
     let encrypted_api_id = nas_state
         .db
@@ -529,14 +579,21 @@ pub async fn cmd_auth_request_owner_code(
     let api_hash = decrypt_secret(&encrypted_api_hash, nas_state.master_key.as_ref())
         .map_err(owner_secret_decrypt_error)?;
 
-    cmd_auth_request_code(app_handle, phone, api_id, api_hash, telegram_state).await
+    request_code_inner(nas_state.telegram.as_ref(), phone, api_id, api_hash).await
 }
 
 #[tauri::command]
-pub async fn cmd_auth_sign_in(
-    code: String,
-    state: State<'_, TelegramState>,
-) -> Result<AuthResult, String> {
+pub async fn cmd_auth_request_owner_code(
+    app_handle: tauri::AppHandle,
+    phone: String,
+    telegram_state: State<'_, TelegramState>,
+    nas_state: State<'_, NasState>,
+) -> Result<String, String> {
+    let _ = (app_handle, telegram_state);
+    request_owner_code_inner(nas_state.inner(), phone).await
+}
+
+pub async fn sign_in_inner(state: &TelegramState, code: String) -> Result<AuthResult, String> {
     log::info!("Signing in with code...");
 
     let client = {
@@ -556,6 +613,7 @@ pub async fn cmd_auth_sign_in(
 
             match client.is_authorized().await {
                 Ok(true) => {
+                    let _ = client.get_me().await;
                     log::info!("Successfully logged in.");
                     Ok(AuthResult {
                         success: true,
@@ -564,11 +622,11 @@ pub async fn cmd_auth_sign_in(
                     })
                 }
                 Ok(false) => {
-                    clear_runtime_client(&state).await;
+                    clear_runtime_client_inner(state).await;
                     Err("Telegram accepted the code but the session is not authorized yet. Try requesting a new code.".to_string())
                 }
                 Err(err) => {
-                    clear_runtime_client(&state).await;
+                    clear_runtime_client_inner(state).await;
                     Err(format!("Telegram login verification failed: {}", err))
                 }
             }
@@ -591,9 +649,16 @@ pub async fn cmd_auth_sign_in(
 }
 
 #[tauri::command]
-pub async fn cmd_auth_check_password(
-    password: String,
+pub async fn cmd_auth_sign_in(
+    code: String,
     state: State<'_, TelegramState>,
+) -> Result<AuthResult, String> {
+    sign_in_inner(state.inner(), code).await
+}
+
+pub async fn check_password_inner(
+    state: &TelegramState,
+    password: String,
 ) -> Result<AuthResult, String> {
     let client = {
         let guard = state.client.lock().await;
@@ -606,6 +671,7 @@ pub async fn cmd_auth_check_password(
     match client.check_password(pw_token, password.as_str()).await {
         Ok(_user) => match client.is_authorized().await {
             Ok(true) => {
+                let _ = client.get_me().await;
                 log::info!("2FA Success.");
                 Ok(AuthResult {
                     success: true,
@@ -614,14 +680,22 @@ pub async fn cmd_auth_check_password(
                 })
             }
             Ok(false) => {
-                clear_runtime_client(&state).await;
+                clear_runtime_client_inner(state).await;
                 Err("Telegram accepted the password but the session is not authorized yet. Try requesting a new code.".to_string())
             }
             Err(err) => {
-                clear_runtime_client(&state).await;
+                clear_runtime_client_inner(state).await;
                 Err(format!("Telegram login verification failed: {}", err))
             }
         },
         Err(e) => Err(format!("2FA Failed: {}", e)),
     }
+}
+
+#[tauri::command]
+pub async fn cmd_auth_check_password(
+    password: String,
+    state: State<'_, TelegramState>,
+) -> Result<AuthResult, String> {
+    check_password_inner(state.inner(), password).await
 }

@@ -1,9 +1,9 @@
 import { motion } from 'framer-motion';
 import { useState, useEffect } from 'react';
 import { Folder, Eye, Trash2 } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';
 import type { TelegramFile } from '@shared/telegram';
 import { FileTypeIcon } from '../FileTypeIcon';
+import { nasApi } from '../../lib/nasApi';
 
 interface FileCardProps {
     file: TelegramFile;
@@ -38,23 +38,9 @@ export function FileCard({ file, onDelete, onDownload, onPreview, isSelected, on
     useEffect(() => {
         if (isFolder || !isImageFile(file.name)) return;
 
-        let cancelled = false;
         setThumbnailLoading(true);
-
-        invoke<string>('cmd_get_thumbnail', {
-            messageId: file.id,
-            folderId: activeFolderId
-        }).then((result) => {
-            if (!cancelled && result) {
-                setThumbnail(result);
-            }
-        }).catch(() => {
-            // Silently fail - will show icon instead
-        }).finally(() => {
-            if (!cancelled) setThumbnailLoading(false);
-        });
-
-        return () => { cancelled = true; };
+        setThumbnail(nasApi.streamUrl(activeFolderId ?? null, file.id));
+        setThumbnailLoading(false);
     }, [file.id, file.name, activeFolderId, isFolder]);
 
     return (

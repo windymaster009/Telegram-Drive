@@ -5,6 +5,7 @@ import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
 import type { DownloadItem, TelegramFile } from '@shared/telegram';
 import type { Store } from '@tauri-apps/plugin-store';
+import { getApiBaseUrl, nasSession } from '../lib/nasApi';
 
 interface ProgressPayload {
     id: string;
@@ -87,11 +88,13 @@ export function useFileDownload(store: Store | null) {
                 return;
             }
 
-            await invoke('cmd_download_file', {
+            await invoke('cmd_download_file_from_api', {
                 messageId: item.messageId,
                 savePath,
                 folderId: item.folderId,
-                transferId: item.id
+                transferId: item.id,
+                apiBaseUrl: getApiBaseUrl(),
+                accessToken: nasSession.getAccessToken(),
             });
 
             if (cancelledRef.current.has(item.id)) {

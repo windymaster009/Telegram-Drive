@@ -58,8 +58,12 @@ fn main() -> std::io::Result<()> {
             .await
             .map_err(std::io::Error::other)?;
 
-        let server = app_lib::server::start_server(nas_state, host.clone(), port, stream_token).await?;
-        println!("Telegram Drive backend API listening on http://{}:{}", host, port);
+        let server =
+            app_lib::server::start_server(nas_state, host.clone(), port, stream_token).await?;
+        println!(
+            "Telegram Drive backend API listening on http://{}:{}",
+            host, port
+        );
         server.await
     })
 }

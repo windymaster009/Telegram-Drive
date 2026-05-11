@@ -49,6 +49,12 @@ export interface LoginResponse {
   access_token: string;
 }
 
+export interface AuthResult {
+  success: boolean;
+  next_step?: "code" | "password" | "dashboard" | string | null;
+  error?: string | null;
+}
+
 export interface AppSession {
   id: string;
   user_id: string;

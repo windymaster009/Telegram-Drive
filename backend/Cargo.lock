@@ -385,6 +385,7 @@ dependencies = [
  "tauri-plugin-window-state",
  "time",
  "tokio",
+ "tokio-util",
  "uuid",
 ]
 

@@ -7,7 +7,7 @@ import { toast } from 'sonner';
 import type { QueueItem } from '@shared/telegram';
 import { useFileDrop } from './useFileDrop';
 import type { Store } from '@tauri-apps/plugin-store';
-import { nasSession } from '../lib/nasApi';
+import { getApiBaseUrl, nasSession } from '../lib/nasApi';
 
 interface ProgressPayload {
     id: string;
@@ -80,7 +80,14 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
         setProcessing(true);
         setUploadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'uploading', progress: 1 } : i));
         try {
-            await invoke('cmd_upload_file', { path: item.path, folderId: item.folderId, transferId: item.id, accessToken: nasSession.getAccessToken() });
+            await invoke('cmd_upload_file_to_api', {
+                path: item.path,
+                folderId: item.folderId,
+                transferId: item.id,
+                apiBaseUrl: getApiBaseUrl(),
+                accessToken: nasSession.getAccessToken(),
+                csrfToken: nasSession.getCsrfToken(),
+            });
             // Check if cancelled during upload
             if (cancelledRef.current.has(item.id)) {
                 cancelledRef.current.delete(item.id);
