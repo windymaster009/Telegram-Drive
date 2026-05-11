@@ -15,6 +15,18 @@ const TEXT_MESSAGES_FILE_ID: i32 = -1;
 const TEXT_MESSAGES_FILE_NAME: &str = "Text messages.txt";
 const MODIFY_FOLDER_PERMISSION_ERROR: &str = "You do not have permission to modify this folder.";
 
+fn url_encode(value: &str) -> String {
+    value
+        .bytes()
+        .flat_map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                vec![byte as char]
+            }
+            _ => format!("%{:02X}", byte).chars().collect(),
+        })
+        .collect()
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FolderPasswordUpdate {
@@ -32,7 +44,7 @@ pub struct FolderActor {
 }
 
 async fn user_from_access_token(
-    nas_state: &State<'_, NasState>,
+    nas_state: &NasState,
     access_token: Option<String>,
 ) -> Result<AppUser, String> {
     let token = access_token
@@ -99,7 +111,7 @@ fn actor_to_user(actor: FolderActor) -> AppUser {
 }
 
 async fn user_from_access_token_or_desktop_admin(
-    nas_state: &State<'_, NasState>,
+    nas_state: &NasState,
     access_token: Option<String>,
     actor: Option<FolderActor>,
 ) -> AppUser {
@@ -123,7 +135,7 @@ fn can_manage_folder(user: &AppUser, folder: &FolderRecordView) -> bool {
 }
 
 async fn ensure_can_manage_folder(
-    nas_state: &State<'_, NasState>,
+    nas_state: &NasState,
     user: &AppUser,
     folder_id: i64,
 ) -> Result<Option<FolderRecordView>, String> {
@@ -140,7 +152,7 @@ async fn ensure_can_manage_folder(
 }
 
 async fn ensure_can_manage_optional_folder(
-    nas_state: &State<'_, NasState>,
+    nas_state: &NasState,
     user: &AppUser,
     folder_id: Option<i64>,
 ) -> Result<(), String> {
@@ -154,7 +166,7 @@ async fn ensure_can_manage_optional_folder(
 }
 
 async fn ensure_can_write_optional_folder(
-    nas_state: &State<'_, NasState>,
+    nas_state: &NasState,
     user: &AppUser,
     folder_id: Option<i64>,
 ) -> Result<(), String> {
@@ -275,7 +287,17 @@ pub async fn cmd_create_folder(
     state: State<'_, TelegramState>,
     nas_state: State<'_, NasState>,
 ) -> Result<FolderMetadata, String> {
-    let user = user_from_access_token_or_desktop_admin(&nas_state, access_token, actor).await;
+    create_folder_inner(name, access_token, actor, state.inner(), nas_state.inner()).await
+}
+
+pub async fn create_folder_inner(
+    name: String,
+    access_token: Option<String>,
+    actor: Option<FolderActor>,
+    state: &TelegramState,
+    nas_state: &NasState,
+) -> Result<FolderMetadata, String> {
+    let user = user_from_access_token_or_desktop_admin(nas_state, access_token, actor).await;
     let client_opt = { state.client.lock().await.clone() };
 
     // --- MOCK ---
@@ -364,8 +386,25 @@ pub async fn cmd_delete_folder(
     access_token: Option<String>,
     actor: Option<FolderActor>,
 ) -> Result<bool, String> {
-    let user = user_from_access_token_or_desktop_admin(&nas_state, access_token, actor).await;
-    ensure_can_manage_folder(&nas_state, &user, folder_id).await?;
+    delete_folder_inner(
+        folder_id,
+        access_token,
+        actor,
+        state.inner(),
+        nas_state.inner(),
+    )
+    .await
+}
+
+pub async fn delete_folder_inner(
+    folder_id: i64,
+    access_token: Option<String>,
+    actor: Option<FolderActor>,
+    state: &TelegramState,
+    nas_state: &NasState,
+) -> Result<bool, String> {
+    let user = user_from_access_token_or_desktop_admin(nas_state, access_token, actor).await;
+    ensure_can_manage_folder(nas_state, &user, folder_id).await?;
     let client_opt = { state.client.lock().await.clone() };
 
     if client_opt.is_none() {
@@ -415,8 +454,27 @@ pub async fn cmd_rename_folder(
     state: State<'_, TelegramState>,
     nas_state: State<'_, NasState>,
 ) -> Result<FolderMetadata, String> {
-    let user = user_from_access_token_or_desktop_admin(&nas_state, access_token, actor).await;
-    let existing = ensure_can_manage_folder(&nas_state, &user, folder_id).await?;
+    rename_folder_inner(
+        folder_id,
+        name,
+        access_token,
+        actor,
+        state.inner(),
+        nas_state.inner(),
+    )
+    .await
+}
+
+pub async fn rename_folder_inner(
+    folder_id: i64,
+    name: String,
+    access_token: Option<String>,
+    actor: Option<FolderActor>,
+    state: &TelegramState,
+    nas_state: &NasState,
+) -> Result<FolderMetadata, String> {
+    let user = user_from_access_token_or_desktop_admin(nas_state, access_token, actor).await;
+    let existing = ensure_can_manage_folder(nas_state, &user, folder_id).await?;
     let trimmed = name.trim();
     if trimmed.is_empty() {
         return Err("Folder name is required".to_string());
@@ -467,8 +525,18 @@ pub async fn cmd_set_folder_icon(
     actor: Option<FolderActor>,
     nas_state: State<'_, NasState>,
 ) -> Result<FolderMetadata, String> {
-    let user = user_from_access_token_or_desktop_admin(&nas_state, access_token, actor).await;
-    let existing = ensure_can_manage_folder(&nas_state, &user, folder_id).await?;
+    set_folder_icon_inner(folder_id, icon, access_token, actor, nas_state.inner()).await
+}
+
+pub async fn set_folder_icon_inner(
+    folder_id: i64,
+    icon: Option<String>,
+    access_token: Option<String>,
+    actor: Option<FolderActor>,
+    nas_state: &NasState,
+) -> Result<FolderMetadata, String> {
+    let user = user_from_access_token_or_desktop_admin(nas_state, access_token, actor).await;
+    let existing = ensure_can_manage_folder(nas_state, &user, folder_id).await?;
     let normalized = icon
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
@@ -501,8 +569,18 @@ pub async fn cmd_set_folder_password(
     actor: Option<FolderActor>,
     nas_state: State<'_, NasState>,
 ) -> Result<bool, String> {
-    let user = user_from_access_token_or_desktop_admin(&nas_state, access_token, actor).await;
-    ensure_can_manage_folder(&nas_state, &user, folder_id).await?;
+    set_folder_password_inner(folder_id, payload, access_token, actor, nas_state.inner()).await
+}
+
+pub async fn set_folder_password_inner(
+    folder_id: i64,
+    payload: FolderPasswordUpdate,
+    access_token: Option<String>,
+    actor: Option<FolderActor>,
+    nas_state: &NasState,
+) -> Result<bool, String> {
+    let user = user_from_access_token_or_desktop_admin(nas_state, access_token, actor).await;
+    ensure_can_manage_folder(nas_state, &user, folder_id).await?;
 
     let remove_password = payload.remove_password.unwrap_or(false);
     if remove_password {
@@ -533,6 +611,14 @@ pub async fn cmd_verify_folder_password(
     password: String,
     nas_state: State<'_, NasState>,
 ) -> Result<bool, String> {
+    verify_folder_password_inner(folder_id, password, nas_state.inner()).await
+}
+
+pub async fn verify_folder_password_inner(
+    folder_id: i64,
+    password: String,
+    nas_state: &NasState,
+) -> Result<bool, String> {
     nas_state
         .db
         .verify_folder_password(folder_id.to_string(), password)
@@ -556,10 +642,33 @@ pub async fn cmd_upload_file(
     nas_state: State<'_, NasState>,
     bw_state: State<'_, BandwidthManager>,
 ) -> Result<String, String> {
+    upload_file_inner(
+        path,
+        folder_id,
+        transfer_id,
+        access_token,
+        Some(app_handle),
+        state.inner(),
+        nas_state.inner(),
+        Some(bw_state.inner()),
+    )
+    .await
+}
+
+pub async fn upload_file_inner(
+    path: String,
+    folder_id: Option<i64>,
+    transfer_id: Option<String>,
+    access_token: Option<String>,
+    app_handle: Option<tauri::AppHandle>,
+    state: &TelegramState,
+    nas_state: &NasState,
+    bw_state: Option<&BandwidthManager>,
+) -> Result<String, String> {
     if let Some(token) = access_token.filter(|value| !value.trim().is_empty()) {
-        match user_from_access_token(&nas_state, Some(token)).await {
+        match user_from_access_token(nas_state, Some(token)).await {
             Ok(user) => {
-                ensure_can_manage_optional_folder(&nas_state, &user, folder_id).await?;
+                ensure_can_manage_optional_folder(nas_state, &user, folder_id).await?;
             }
             Err(err) => {
                 log::warn!(
@@ -570,27 +679,33 @@ pub async fn cmd_upload_file(
         }
     }
     let size = std::fs::metadata(&path).map_err(|e| e.to_string())?.len();
-    bw_state.can_transfer(size)?;
+    if let Some(bw_state) = bw_state {
+        bw_state.can_transfer(size)?;
+    }
 
     let tid = transfer_id.unwrap_or_default();
 
     let client_opt = { state.client.lock().await.clone() };
     if client_opt.is_none() {
         log::info!("[MOCK] Uploaded file {} to {:?}", path, folder_id);
-        bw_state.add_up(size);
+        if let Some(bw_state) = bw_state {
+            bw_state.add_up(size);
+        }
         return Ok("Mock upload successful".to_string());
     }
     let client = client_opt.unwrap();
 
     // Emit start progress
     if !tid.is_empty() {
-        let _ = app_handle.emit(
-            "upload-progress",
-            ProgressPayload {
-                id: tid.clone(),
-                percent: 0,
-            },
-        );
+        if let Some(app_handle) = &app_handle {
+            let _ = app_handle.emit(
+                "upload-progress",
+                ProgressPayload {
+                    id: tid.clone(),
+                    percent: 0,
+                },
+            );
+        }
     }
 
     let path_clone = path.clone();
@@ -611,9 +726,99 @@ pub async fn cmd_upload_file(
         .await
         .map_err(map_error)?;
 
-    bw_state.add_up(size);
+    if let Some(bw_state) = bw_state {
+        bw_state.add_up(size);
+    }
 
     // Emit completion
+    if !tid.is_empty() {
+        if let Some(app_handle) = &app_handle {
+            let _ = app_handle.emit(
+                "upload-progress",
+                ProgressPayload {
+                    id: tid,
+                    percent: 100,
+                },
+            );
+        }
+    }
+
+    Ok("File uploaded successfully".to_string())
+}
+
+#[tauri::command]
+pub async fn cmd_upload_file_to_api(
+    path: String,
+    folder_id: Option<i64>,
+    transfer_id: Option<String>,
+    api_base_url: String,
+    access_token: Option<String>,
+    csrf_token: Option<String>,
+    app_handle: tauri::AppHandle,
+) -> Result<String, String> {
+    let size = std::fs::metadata(&path).map_err(|e| e.to_string())?.len();
+    let file_name = std::path::Path::new(&path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("upload.bin")
+        .to_string();
+    let tid = transfer_id.unwrap_or_default();
+    if !tid.is_empty() {
+        let _ = app_handle.emit(
+            "upload-progress",
+            ProgressPayload {
+                id: tid.clone(),
+                percent: 1,
+            },
+        );
+    }
+
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|err| format!("Could not read file for upload: {}", err))?;
+    if !tid.is_empty() {
+        let _ = app_handle.emit(
+            "upload-progress",
+            ProgressPayload {
+                id: tid.clone(),
+                percent: 35,
+            },
+        );
+    }
+
+    let mut url = format!("{}/api/telegram/upload", api_base_url.trim_end_matches('/'));
+    let mut params = Vec::new();
+    if let Some(folder_id) = folder_id {
+        params.push(format!("folder_id={}", folder_id));
+    }
+    params.push(format!("file_name={}", url_encode(&file_name)));
+    if !params.is_empty() {
+        url.push('?');
+        url.push_str(&params.join("&"));
+    }
+
+    let client = reqwest::Client::new();
+    let mut request = client
+        .post(url)
+        .header("content-type", "application/octet-stream")
+        .header("content-length", size.to_string())
+        .body(bytes);
+    if let Some(token) = access_token.filter(|value| !value.trim().is_empty()) {
+        request = request.bearer_auth(token);
+    }
+    if let Some(csrf_token) = csrf_token.filter(|value| !value.trim().is_empty()) {
+        request = request.header("x-csrf-token", csrf_token);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|err| format!("Upload request failed: {}", err))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("Upload failed: {} {}", status, body));
+    }
+
     if !tid.is_empty() {
         let _ = app_handle.emit(
             "upload-progress",
@@ -623,8 +828,87 @@ pub async fn cmd_upload_file(
             },
         );
     }
-
     Ok("File uploaded successfully".to_string())
+}
+
+#[tauri::command]
+pub async fn cmd_download_file_from_api(
+    message_id: i32,
+    save_path: String,
+    folder_id: Option<i64>,
+    transfer_id: Option<String>,
+    api_base_url: String,
+    access_token: Option<String>,
+    app_handle: tauri::AppHandle,
+) -> Result<String, String> {
+    let folder = folder_id
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "home".to_string());
+    let mut url = format!(
+        "{}/api/telegram/stream/{}/{}",
+        api_base_url.trim_end_matches('/'),
+        folder,
+        message_id
+    );
+    if let Some(token) = access_token.filter(|value| !value.trim().is_empty()) {
+        url.push_str("?access_token=");
+        url.push_str(&url_encode(&token));
+    }
+
+    let tid = transfer_id.unwrap_or_default();
+    let client = reqwest::Client::new();
+    let mut response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|err| format!("Download request failed: {}", err))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("Download failed: {} {}", status, body));
+    }
+
+    let total_size = response.content_length().unwrap_or(0);
+    let mut file = tokio::fs::File::create(&save_path)
+        .await
+        .map_err(|err| format!("Could not create download file: {}", err))?;
+    let mut downloaded: u64 = 0;
+    let mut last_percent: u8 = 0;
+
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|err| format!("Download chunk failed: {}", err))?
+    {
+        tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
+            .await
+            .map_err(|err| format!("Could not write download file: {}", err))?;
+        downloaded += chunk.len() as u64;
+        if !tid.is_empty() && total_size > 0 {
+            let percent = ((downloaded as f64 / total_size as f64) * 100.0).min(100.0) as u8;
+            if percent != last_percent {
+                last_percent = percent;
+                let _ = app_handle.emit(
+                    "download-progress",
+                    ProgressPayload {
+                        id: tid.clone(),
+                        percent,
+                    },
+                );
+            }
+        }
+    }
+
+    if !tid.is_empty() {
+        let _ = app_handle.emit(
+            "download-progress",
+            ProgressPayload {
+                id: tid,
+                percent: 100,
+            },
+        );
+    }
+    Ok("Download successful".to_string())
 }
 
 #[tauri::command]
@@ -635,8 +919,25 @@ pub async fn cmd_delete_file(
     nas_state: State<'_, NasState>,
     access_token: Option<String>,
 ) -> Result<bool, String> {
-    let user = user_from_access_token_or_desktop_admin(&nas_state, access_token, None).await;
-    ensure_can_manage_optional_folder(&nas_state, &user, folder_id).await?;
+    delete_file_inner(
+        message_id,
+        folder_id,
+        access_token,
+        state.inner(),
+        nas_state.inner(),
+    )
+    .await
+}
+
+pub async fn delete_file_inner(
+    message_id: i32,
+    folder_id: Option<i64>,
+    access_token: Option<String>,
+    state: &TelegramState,
+    nas_state: &NasState,
+) -> Result<bool, String> {
+    let user = user_from_access_token_or_desktop_admin(nas_state, access_token, None).await;
+    ensure_can_manage_optional_folder(nas_state, &user, folder_id).await?;
     let client_opt = { state.client.lock().await.clone() };
     if client_opt.is_none() {
         log::info!(
@@ -831,9 +1132,28 @@ pub async fn cmd_move_files(
     nas_state: State<'_, NasState>,
     access_token: Option<String>,
 ) -> Result<bool, String> {
-    let user = user_from_access_token_or_desktop_admin(&nas_state, access_token, None).await;
-    ensure_can_manage_optional_folder(&nas_state, &user, source_folder_id).await?;
-    ensure_can_manage_optional_folder(&nas_state, &user, target_folder_id).await?;
+    move_files_inner(
+        message_ids,
+        source_folder_id,
+        target_folder_id,
+        access_token,
+        state.inner(),
+        nas_state.inner(),
+    )
+    .await
+}
+
+pub async fn move_files_inner(
+    message_ids: Vec<i32>,
+    source_folder_id: Option<i64>,
+    target_folder_id: Option<i64>,
+    access_token: Option<String>,
+    state: &TelegramState,
+    nas_state: &NasState,
+) -> Result<bool, String> {
+    let user = user_from_access_token_or_desktop_admin(nas_state, access_token, None).await;
+    ensure_can_manage_optional_folder(nas_state, &user, source_folder_id).await?;
+    ensure_can_manage_optional_folder(nas_state, &user, target_folder_id).await?;
     if source_folder_id == target_folder_id {
         return Ok(true);
     }
@@ -878,8 +1198,27 @@ pub async fn cmd_copy_files(
     nas_state: State<'_, NasState>,
     access_token: Option<String>,
 ) -> Result<bool, String> {
-    let user = user_from_access_token_or_desktop_admin(&nas_state, access_token, None).await;
-    ensure_can_write_optional_folder(&nas_state, &user, target_folder_id).await?;
+    copy_files_inner(
+        message_ids,
+        source_folder_id,
+        target_folder_id,
+        access_token,
+        state.inner(),
+        nas_state.inner(),
+    )
+    .await
+}
+
+pub async fn copy_files_inner(
+    message_ids: Vec<i32>,
+    source_folder_id: Option<i64>,
+    target_folder_id: Option<i64>,
+    access_token: Option<String>,
+    state: &TelegramState,
+    nas_state: &NasState,
+) -> Result<bool, String> {
+    let user = user_from_access_token_or_desktop_admin(nas_state, access_token, None).await;
+    ensure_can_write_optional_folder(nas_state, &user, target_folder_id).await?;
     if source_folder_id == target_folder_id {
         return Ok(true);
     }
@@ -1003,6 +1342,13 @@ pub async fn get_files_inner(
 pub async fn cmd_search_global(
     query: String,
     state: State<'_, TelegramState>,
+) -> Result<Vec<FileMetadata>, String> {
+    search_global_inner(query, state.inner()).await
+}
+
+pub async fn search_global_inner(
+    query: String,
+    state: &TelegramState,
 ) -> Result<Vec<FileMetadata>, String> {
     let client_opt = { state.client.lock().await.clone() };
     if client_opt.is_none() {
