@@ -10,7 +10,7 @@ use nas::state::NasState;
 use rand::Rng;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tauri::Manager;
+use tauri::{Manager, State};
 use tokio::sync::Mutex;
 
 pub mod server;
@@ -167,6 +167,14 @@ fn generate_stream_token() -> String {
 /// from the RunEvent::Exit handler for graceful Ctrl+C termination.
 pub struct ActixServerHandle(pub Arc<std::sync::Mutex<Option<actix_web::dev::ServerHandle>>>);
 
+#[derive(Clone)]
+pub struct StartupErrorState(pub Arc<std::sync::Mutex<Option<String>>>);
+
+#[tauri::command]
+fn cmd_startup_error(state: State<'_, StartupErrorState>) -> Option<String> {
+    state.0.lock().ok().and_then(|guard| guard.clone())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     load_backend_env();
@@ -178,6 +186,8 @@ pub fn run() {
     let server_handle: Arc<std::sync::Mutex<Option<actix_web::dev::ServerHandle>>> =
         Arc::new(std::sync::Mutex::new(None));
     let server_handle_for_setup = server_handle.clone();
+    let startup_error_state = StartupErrorState(Arc::new(std::sync::Mutex::new(None)));
+    let startup_error_for_setup = startup_error_state.clone();
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -189,6 +199,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .setup(move |app| {
+            app.manage(startup_error_for_setup.clone());
             let telegram_state = new_telegram_state();
             let telegram_state_arc = Arc::new(telegram_state.clone());
             let api_host = api_host();
@@ -213,7 +224,17 @@ pub fn run() {
                 app_data_dir.clone(),
                 api_base_url,
                 telegram_state_arc.clone(),
-            ))?;
+            ));
+            let nas_state = match nas_state {
+                Ok(state) => state,
+                Err(err) => {
+                    log::error!("Backend setup failed: {}", err);
+                    if let Ok(mut guard) = startup_error_for_setup.0.lock() {
+                        *guard = Some(err);
+                    }
+                    return Ok(());
+                }
+            };
             tauri::async_runtime::block_on(seed_owner_config_from_env(&nas_state))?;
             app.manage(nas_state.clone());
 
@@ -319,6 +340,7 @@ pub fn run() {
             commands::cmd_get_local_preview_status,
             commands::cmd_cancel_local_preview,
             commands::cmd_get_stream_info,
+            cmd_startup_error,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

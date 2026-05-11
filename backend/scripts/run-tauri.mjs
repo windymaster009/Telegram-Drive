@@ -38,7 +38,7 @@ const env = {
 };
 
 function quoteCmdArg(arg) {
-  return `"${arg.replaceAll('"', '\\"')}"`;
+  return `"${arg.replaceAll('"', '""')}"`;
 }
 
 const tauriArgs = process.argv.slice(2);
@@ -48,7 +48,6 @@ const result = isWindows && existsSync(vsDevCmd)
       "cmd.exe",
       [
         "/d",
-        "/s",
         "/c",
         [
           "call",
@@ -65,6 +64,7 @@ const result = isWindows && existsSync(vsDevCmd)
         cwd: backendDir,
         env,
         stdio: "inherit",
+        windowsVerbatimArguments: true,
       },
     )
   : spawnSync(isWindows ? process.execPath : tauriBin, isWindows ? [tauriJs, ...tauriArgs] : tauriArgs, {

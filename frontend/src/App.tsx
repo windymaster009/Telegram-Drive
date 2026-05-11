@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-shell";
+import { Store } from "@tauri-apps/plugin-store";
 import { QRCodeSVG } from "qrcode.react";
 import { Chrome, Copy, Shield, UserPlus, Users, History, KeyRound, ScanQrCode, HardDrive, LogOut, ChevronDown, Skull } from "lucide-react";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -42,6 +43,42 @@ import caFlag from "flag-icons/flags/4x3/ca.svg?url";
 import "./App.css";
 
 const queryClient = new QueryClient();
+
+async function loadStoredTelegramFolders() {
+  const foldersById = new Map<number, TelegramFolder>();
+
+  for (const storeName of ["config.json", "settings.json"]) {
+    try {
+      const store = await Store.load(storeName);
+      const folders = await store.get<TelegramFolder[]>("folders");
+      if (!Array.isArray(folders)) continue;
+
+      for (const folder of folders) {
+        if (Number.isFinite(folder.id)) {
+          foldersById.set(folder.id, folder);
+        }
+      }
+    } catch {
+      // Older installs may only have one of these store files.
+    }
+  }
+
+  return Array.from(foldersById.values());
+}
+
+function mergeTelegramFolders(...folderGroups: TelegramFolder[][]) {
+  const foldersById = new Map<number, TelegramFolder>();
+
+  for (const folders of folderGroups) {
+    for (const folder of folders) {
+      foldersById.set(folder.id, { ...foldersById.get(folder.id), ...folder });
+    }
+  }
+
+  return Array.from(foldersById.values()).sort((a, b) =>
+    a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
+  );
+}
 
 type CountryOption = {
   iso: string;
@@ -89,6 +126,12 @@ function AppContent() {
   );
   const isBrowserGoogleCallback =
     !runningInDesktop && (Boolean(googleCode) || Boolean(googleError) || window.location.pathname.includes("/auth/google/callback"));
+  const startupErrorQuery = useQuery({
+    queryKey: ["startup-error"],
+    queryFn: () => invoke<string | null>("cmd_startup_error"),
+    enabled: runningInDesktop,
+    retry: false,
+  });
 
   const systemQuery = useQuery({
     queryKey: ["system-status"],
@@ -242,7 +285,10 @@ function AppContent() {
       ) : isLoading ? (
         <CenteredCard title="Preparing Telegram NAS" subtitle="Loading the auth and owner-session state..." />
       ) : systemQuery.error ? (
-        <CenteredCard title="Backend Unavailable" subtitle={(systemQuery.error as Error).message} />
+        <CenteredCard
+          title={startupErrorQuery.data ? "Backend Setup Required" : "Backend Unavailable"}
+          subtitle={startupErrorQuery.data || (systemQuery.error as Error).message}
+        />
       ) : systemQuery.data?.setup_required ? (
         <BootstrapPage onBootstrapped={finishLogin} />
       ) : !meQuery.data ? (
@@ -1071,7 +1117,25 @@ function UsersPanel({ csrfToken }: { csrfToken: string | null }) {
   });
   const folderCatalog = useQuery({
     queryKey: ["telegram-folder-catalog"],
-    queryFn: nasApi.scanTelegramFolders,
+    queryFn: async () => {
+      const storedFolders = await loadStoredTelegramFolders();
+
+      try {
+        await invoke<boolean>("cmd_check_connection");
+        const scannedFolders = await invoke<TelegramFolder[]>("cmd_scan_folders", {
+          accessToken: nasSession.getAccessToken(),
+          actor: {
+            userId: me.id,
+            displayName: me.display_name,
+            email: me.email || me.username,
+            role: me.role,
+          },
+        });
+        return mergeTelegramFolders(storedFolders, scannedFolders);
+      } catch {
+        return storedFolders;
+      }
+    },
     enabled: !!selectedUser,
   });
   const [permissionDraft, setPermissionDraft] = useState<PermissionAssignment[]>([]);
@@ -1740,4 +1804,3 @@ function App() {
 }
 
 export default App;
-

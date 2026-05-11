@@ -162,7 +162,8 @@ struct AuditRecord {
 impl Database {
     pub async fn new() -> Result<Self, String> {
         let uri = std::env::var("MONGODB_URI")
-            .map_err(|_| "MONGODB_URI is required in backend/.env".to_string())?;
+            .or_else(|_| std::env::var("MONGO_URI"))
+            .map_err(|_| "MONGODB_URI or MONGO_URI is required in backend/.env".to_string())?;
         let db_name =
             std::env::var("MONGODB_DB_NAME").unwrap_or_else(|_| "telegram_drive".to_string());
         let mut options = ClientOptions::parse(uri)
@@ -222,7 +223,12 @@ impl Database {
     }
 
     pub async fn setup_required(&self) -> Result<bool, String> {
-        Ok(false)
+        let count = self
+            .users
+            .count_documents(doc! {}, None)
+            .await
+            .map_err(|err| err.to_string())?;
+        Ok(count == 0)
     }
 
     pub async fn owner_configured(&self) -> Result<bool, String> {
