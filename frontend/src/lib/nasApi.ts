@@ -68,16 +68,25 @@ async function requestWithTimeout<T>(
   timeoutMs = 65000
 ): Promise<T> {
   const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  let timeoutId: number | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = window.setTimeout(() => {
+      controller.abort();
+      reject(new Error("Request timed out. Check the Pi backend logs and try again."));
+    }, timeoutMs);
+  });
   try {
-    return await request<T>(path, { ...init, signal: controller.signal }, csrfToken);
+    return await Promise.race([
+      request<T>(path, { ...init, signal: controller.signal }, csrfToken),
+      timeoutPromise,
+    ]);
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       throw new Error("Request timed out. Check the Pi backend logs and try again.");
     }
     throw error;
   } finally {
-    window.clearTimeout(timer);
+    if (timeoutId !== undefined) window.clearTimeout(timeoutId);
   }
 }
 
@@ -164,7 +173,7 @@ export const nasApi = {
     request<{ ok: boolean }>(`/api/admin/users/${userId}/permissions`, { method: "PUT", body: JSON.stringify({ permissions }) }, csrfToken),
   ownerStatus: () => request<{ configured: boolean; api_id?: string | null; connected: boolean; error?: string | null }>("/api/admin/owner/status"),
   saveOwnerConfig: (payload: { api_id: number; api_hash: string }, csrfToken: string) =>
-    request<{ ok: boolean }>("/api/admin/owner/config", { method: "POST", body: JSON.stringify(payload) }, csrfToken),
+    requestWithTimeout<{ ok: boolean }>("/api/admin/owner/config", { method: "POST", body: JSON.stringify(payload) }, csrfToken, 20000),
   requestOwnerCode: (payload: { phone: string }, csrfToken: string) =>
     requestWithTimeout<{ status: string }>("/api/admin/owner/auth/request-code", { method: "POST", body: JSON.stringify(payload) }, csrfToken),
   ownerSignIn: (payload: { code: string }, csrfToken: string) =>
