@@ -16,8 +16,8 @@ use super::models::{
 };
 use super::state::NasState;
 use crate::commands::auth::{
-    check_password_inner, ensure_owner_client_connected, logout_inner, owner_session_status_inner,
-    request_owner_code_inner, sign_in_inner,
+    check_password_inner, clear_runtime_client_inner, ensure_owner_client_connected, logout_inner,
+    owner_session_status_inner, request_owner_code_inner, sign_in_inner,
 };
 use crate::commands::fs::{
     copy_files_inner, create_folder_inner, delete_file_inner, delete_folder_inner, get_files_inner,
@@ -1055,8 +1055,8 @@ async fn store_owner_config(
         return HttpResponse::InternalServerError().json(json!({ "error": err }));
     }
 
+    clear_runtime_client_inner(state.telegram.as_ref()).await;
     *state.telegram.api_id.lock().await = Some(payload.api_id);
-    *state.telegram.client.lock().await = None;
 
     HttpResponse::Ok().json(json!({ "ok": true }))
 }
