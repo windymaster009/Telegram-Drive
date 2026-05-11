@@ -110,7 +110,13 @@ pub async fn ensure_client_initialized_inner(
 }
 
 pub async fn clear_runtime_client_inner(state: &TelegramState) {
-    let _init_guard = state.init_lock.lock().await;
+    let _init_guard = match timeout(Duration::from_secs(5), state.init_lock.lock()).await {
+        Ok(guard) => Some(guard),
+        Err(_) => {
+            log::warn!("Timed out waiting for Telegram init lock while clearing runtime client");
+            None
+        }
+    };
 
     {
         let mut shutdown_guard = state.runner_shutdown.lock().unwrap();
@@ -480,7 +486,18 @@ pub async fn request_code_inner(
     clear_runtime_client_inner(state).await;
     *state.api_id.lock().await = Some(api_id);
 
-    let client_handle = ensure_client_initialized_inner(state, api_id).await?;
+    let client_handle = match timeout(
+        Duration::from_secs(20),
+        ensure_client_initialized_inner(state, api_id),
+    )
+    .await
+    {
+        Ok(result) => result?,
+        Err(_) => return Err(
+            "Telegram client initialization timed out. Restart the backend service and try again."
+                .to_string(),
+        ),
+    };
 
     log::info!("Requesting code for {}", phone);
 
