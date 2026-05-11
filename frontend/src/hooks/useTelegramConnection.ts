@@ -7,7 +7,7 @@ import { useConfirm } from '../context/ConfirmContext';
 import type { TelegramFolder } from '@shared/telegram';
 import type { AppUser } from '@shared/nas';
 import { useNetworkStatus } from './useNetworkStatus';
-import { nasApi, nasSession } from '../lib/nasApi';
+import { nasApi } from '../lib/nasApi';
 
 export function useTelegramConnection(onLogoutParent: () => void, currentUser?: AppUser) {
     const queryClient = useQueryClient();
@@ -94,13 +94,6 @@ export function useTelegramConnection(onLogoutParent: () => void, currentUser?: 
         return keywords.some(k => error.toLowerCase().includes(k.toLowerCase()));
     };
 
-    const actor = currentUser ? {
-        userId: currentUser.id,
-        displayName: currentUser.display_name,
-        email: currentUser.email || currentUser.username,
-        role: currentUser.role,
-    } : null;
-
     const forceLogout = async () => {
         setIsConnected(false);
         try {
@@ -169,7 +162,7 @@ export function useTelegramConnection(onLogoutParent: () => void, currentUser?: 
     const handleCreateFolder = async (name: string) => {
         if (!store) return;
         try {
-            const newFolder = await invoke<TelegramFolder>('cmd_create_folder', { name, accessToken: nasSession.getAccessToken(), actor });
+            const newFolder = await nasApi.createTelegramFolder(name);
             const updated = [...folders, newFolder];
             setFolders(updated);
             await store.set('folders', updated);
@@ -192,7 +185,7 @@ export function useTelegramConnection(onLogoutParent: () => void, currentUser?: 
         })) return;
 
         try {
-            await invoke('cmd_delete_folder', { folderId, accessToken: nasSession.getAccessToken(), actor });
+            await nasApi.deleteTelegramFolder(folderId);
             const updated = folders.filter(f => f.id !== folderId);
             setFolders(updated);
             if (store) {
@@ -249,12 +242,7 @@ export function useTelegramConnection(onLogoutParent: () => void, currentUser?: 
             return;
         }
         try {
-            const folder = await invoke<TelegramFolder>('cmd_rename_folder', {
-                folderId,
-                name: trimmed,
-                accessToken: nasSession.getAccessToken(),
-                actor
-            });
+            const folder = await nasApi.renameTelegramFolder(folderId, trimmed);
             await updateFolderInStore(folder);
             toast.success("Folder renamed.");
         } catch (e) {
@@ -264,12 +252,7 @@ export function useTelegramConnection(onLogoutParent: () => void, currentUser?: 
 
     const handleFolderIconChange = async (folderId: number, icon: string | null) => {
         try {
-            const folder = await invoke<TelegramFolder>('cmd_set_folder_icon', {
-                folderId,
-                icon: icon?.trim() || null,
-                accessToken: nasSession.getAccessToken(),
-                actor
-            });
+            const folder = await nasApi.setTelegramFolderIcon(folderId, icon?.trim() || null);
             await updateFolderInStore(folder);
             toast.success("Folder icon updated.");
         } catch (e) {
@@ -279,14 +262,9 @@ export function useTelegramConnection(onLogoutParent: () => void, currentUser?: 
 
     const handleFolderPassword = async (folderId: number, password: string | null) => {
         try {
-            await invoke('cmd_set_folder_password', {
-                folderId,
-                payload: password?.trim()
-                    ? { password: password.trim() }
-                    : { removePassword: true },
-                accessToken: nasSession.getAccessToken(),
-                actor
-            });
+            await nasApi.setTelegramFolderPassword(folderId, password?.trim()
+                ? { password: password.trim() }
+                : { remove_password: true });
             const current = folders.find((folder) => folder.id === folderId);
             if (current) {
                 await updateFolderInStore({

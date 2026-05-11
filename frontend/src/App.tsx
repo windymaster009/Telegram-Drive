@@ -106,6 +106,7 @@ function AppContent() {
 
   const finishLogin = (response: { csrf_token: string; access_token: string }) => {
     nasSession.setAccessToken(response.access_token);
+    nasSession.setCsrfToken(response.csrf_token);
     setCsrfToken(response.csrf_token);
     client.invalidateQueries({ queryKey: ["auth-me"] });
     client.invalidateQueries({ queryKey: ["system-status"] });
@@ -116,6 +117,7 @@ function AppContent() {
       await nasApi.logout(csrfToken || undefined);
     } finally {
       nasSession.clearAccessToken();
+      nasSession.clearCsrfToken();
       setCsrfToken(null);
       client.removeQueries({ queryKey: ["auth-me"] });
       client.invalidateQueries({ queryKey: ["system-status"] });
@@ -213,6 +215,7 @@ function AppContent() {
 
   useEffect(() => {
     if (meQuery.data?.csrf_token) {
+      nasSession.setCsrfToken(meQuery.data.csrf_token);
       setCsrfToken(meQuery.data.csrf_token);
     }
   }, [meQuery.data?.csrf_token]);

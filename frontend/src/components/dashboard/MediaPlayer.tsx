@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { X, ChevronLeft, ChevronRight } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';
 import type { TelegramFile } from '@shared/telegram';
 import { isVideoFile, isAudioFile } from '../../utils';
+import { nasApi } from '../../lib/nasApi';
 
 interface MediaPlayerProps {
     file: TelegramFile;
@@ -14,128 +14,21 @@ interface MediaPlayerProps {
     activeFolderId: number | null;
 }
 
-type StreamInfo = {
-    token: string;
-    base_url: string;
-};
-
-type LocalPreviewInfo = {
-    id: string;
-    file_path: string;
-    tail_path: string | null;
-    tail_start: number | null;
-    file_name: string;
-    mime_type: string;
-    size: number;
-};
-
-type LocalPreviewStatus = {
-    downloaded: number;
-    size: number;
-    complete: boolean;
-    cancelled: boolean;
-    error: string | null;
-};
-
 export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, totalItems, activeFolderId }: MediaPlayerProps) {
-    const [streamInfo, setStreamInfo] = useState<StreamInfo | null>(null);
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-    const [progress, setProgress] = useState<LocalPreviewStatus | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [retryNonce, setRetryNonce] = useState(0);
-
-    useEffect(() => {
-        invoke<StreamInfo>('cmd_get_stream_info')
-            .then(setStreamInfo)
-            .catch((err) => {
-                setError(String(err || 'Failed to initialize stream'));
-                setLoading(false);
-            });
-    }, []);
 
     const isVideo = isVideoFile(file.name);
     const isAudio = isAudioFile(file.name);
 
     useEffect(() => {
-        if (!streamInfo) return;
-
-        let cancelled = false;
-        let previewId: string | null = null;
-        let pollTimer: number | null = null;
-
-        const cancelPreview = (id: string) => {
-            invoke('cmd_cancel_local_preview', { previewId: id }).catch(() => {
-                // Best-effort cleanup; the backend also retries if the file is still open.
-            });
-        };
-
         setLoading(true);
         setError(null);
-        setProgress(null);
-        setPreviewUrl(null);
         setRetryNonce(0);
-
-        invoke<LocalPreviewInfo>('cmd_start_local_preview', {
-            messageId: file.id,
-            folderId: activeFolderId
-        }).then((info) => {
-            previewId = info.id;
-            if (cancelled) {
-                cancelPreview(info.id);
-                return;
-            }
-
-            const params = new URLSearchParams({
-                token: streamInfo.token,
-                path: info.file_path,
-                size: String(info.size),
-                mime: info.mime_type,
-            });
-            if (info.tail_path && info.tail_start !== null) {
-                params.set('tail_path', info.tail_path);
-                params.set('tail_start', String(info.tail_start));
-            }
-            const localUrl = `${streamInfo.base_url}/local-preview/${encodeURIComponent(info.id)}/${encodeURIComponent(info.file_name)}?${params.toString()}`;
-            setPreviewUrl(localUrl);
-
-            pollTimer = window.setInterval(() => {
-                invoke<LocalPreviewStatus | null>('cmd_get_local_preview_status', { previewId: info.id })
-                    .then((status) => {
-                        if (!status || cancelled) return;
-                        setProgress(status);
-                        if (status.error) {
-                            setError(status.error);
-                            setLoading(false);
-                        }
-                        if (status.complete && pollTimer !== null) {
-                            window.clearInterval(pollTimer);
-                            pollTimer = null;
-                        }
-                    })
-                    .catch(() => {});
-            }, 500);
-        }).catch((err) => {
-            if (!cancelled) {
-                setError(String(err || 'Failed to prepare local preview'));
-                setLoading(false);
-            }
-        });
-
-        const timer = window.setTimeout(() => {
-            if (!cancelled) {
-                setError("Preview timed out. Check Telegram connection or try again.");
-                setLoading(false);
-            }
-        }, 90000);
-
-        return () => {
-            cancelled = true;
-            window.clearTimeout(timer);
-            if (pollTimer !== null) window.clearInterval(pollTimer);
-            if (previewId) cancelPreview(previewId);
-        };
-    }, [streamInfo, activeFolderId, file.id]);
+        setPreviewUrl(nasApi.streamUrl(activeFolderId, file.id));
+    }, [activeFolderId, file.id]);
 
     const markReady = () => {
         setLoading(false);
@@ -143,15 +36,6 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
     };
 
     const markError = () => {
-        if (progress && !progress.complete) {
-            setLoading(true);
-            setError(null);
-            window.setTimeout(() => {
-                setRetryNonce((value) => value + 1);
-            }, 1200);
-            return;
-        }
-
         setLoading(false);
         setError("Failed to load stream from backend.");
     };
@@ -238,9 +122,6 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
                                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/80 text-white">
                                     {loading && <div className="w-10 h-10 border-4 border-telegram-primary border-t-transparent rounded-full animate-spin"></div>}
                                     <p>{error || "Loading stream..."}</p>
-                                    {progress && progress.size > 0 && (
-                                        <p className="text-xs text-white/50">{Math.round((progress.downloaded / progress.size) * 100)}% cached locally</p>
-                                    )}
                                 </div>
                             )}
                         </>

@@ -1,5 +1,6 @@
 use actix_web::cookie::{Cookie, SameSite};
 use actix_web::{delete, get, http::header, post, put, web, HttpRequest, HttpResponse, Responder};
+use futures::StreamExt;
 use serde_json::json;
 use time::Duration;
 
@@ -18,7 +19,12 @@ use crate::commands::auth::{
     check_password_inner, ensure_owner_client_connected, logout_inner, owner_session_status_inner,
     request_owner_code_inner, sign_in_inner,
 };
-use crate::commands::fs::{get_files_inner, scan_folders_for_user};
+use crate::commands::fs::{
+    copy_files_inner, create_folder_inner, delete_file_inner, delete_folder_inner, get_files_inner,
+    move_files_inner, rename_folder_inner, scan_folders_for_user, search_global_inner,
+    set_folder_icon_inner, set_folder_password_inner, upload_file_inner,
+    verify_folder_password_inner, FolderPasswordUpdate,
+};
 
 const SESSION_TTL_SECONDS: i64 = 60 * 60 * 24 * 14;
 const QR_TTL_SECONDS: i64 = 60 * 10;
@@ -66,6 +72,17 @@ pub fn configure_api(cfg: &mut web::ServiceConfig) {
         .service(telegram_connection)
         .service(list_telegram_files)
         .service(scan_telegram_folders)
+        .service(create_telegram_folder)
+        .service(delete_telegram_folder)
+        .service(rename_telegram_folder)
+        .service(set_telegram_folder_icon)
+        .service(set_telegram_folder_password)
+        .service(verify_telegram_folder_password)
+        .service(upload_telegram_file)
+        .service(delete_telegram_file)
+        .service(move_telegram_files)
+        .service(copy_telegram_files)
+        .service(search_telegram_files)
         .service(list_audit_logs);
 }
 
@@ -143,6 +160,50 @@ struct OwnerPasswordRequest {
 #[derive(serde::Deserialize)]
 struct FilesQuery {
     folder_id: Option<i64>,
+}
+
+#[derive(serde::Deserialize)]
+struct CreateFolderRequest {
+    name: String,
+}
+
+#[derive(serde::Deserialize)]
+struct RenameFolderRequest {
+    name: String,
+}
+
+#[derive(serde::Deserialize)]
+struct FolderIconRequest {
+    icon: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct FolderPasswordRequest {
+    password: Option<String>,
+    remove_password: Option<bool>,
+}
+
+#[derive(serde::Deserialize)]
+struct UploadQuery {
+    folder_id: Option<i64>,
+    file_name: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct FilePathQuery {
+    folder_id: Option<i64>,
+}
+
+#[derive(serde::Deserialize)]
+struct MoveCopyRequest {
+    message_ids: Vec<i32>,
+    source_folder_id: Option<i64>,
+    target_folder_id: Option<i64>,
+}
+
+#[derive(serde::Deserialize)]
+struct SearchQuery {
+    query: String,
 }
 
 #[post("/api/auth/google")]
@@ -1180,6 +1241,286 @@ async fn scan_telegram_folders(state: web::Data<NasState>, req: HttpRequest) -> 
     }
 }
 
+#[post("/api/telegram/folders")]
+async fn create_telegram_folder(
+    state: web::Data<NasState>,
+    req: HttpRequest,
+    payload: web::Json<CreateFolderRequest>,
+) -> impl Responder {
+    if let Err(resp) = authorize(&state, &req, false).await {
+        return resp;
+    }
+    let token = session_token_from_request(&state, &req);
+    match create_folder_inner(
+        payload.name.clone(),
+        token,
+        None,
+        state.telegram.as_ref(),
+        &state,
+    )
+    .await
+    {
+        Ok(folder) => HttpResponse::Ok().json(folder),
+        Err(err) => HttpResponse::BadRequest().json(json!({ "error": err })),
+    }
+}
+
+#[delete("/api/telegram/folders/{folder_id}")]
+async fn delete_telegram_folder(
+    state: web::Data<NasState>,
+    req: HttpRequest,
+    path: web::Path<i64>,
+) -> impl Responder {
+    if let Err(resp) = authorize(&state, &req, false).await {
+        return resp;
+    }
+    let token = session_token_from_request(&state, &req);
+    match delete_folder_inner(
+        path.into_inner(),
+        token,
+        None,
+        state.telegram.as_ref(),
+        &state,
+    )
+    .await
+    {
+        Ok(ok) => HttpResponse::Ok().json(json!({ "ok": ok })),
+        Err(err) => HttpResponse::BadRequest().json(json!({ "error": err })),
+    }
+}
+
+#[put("/api/telegram/folders/{folder_id}/name")]
+async fn rename_telegram_folder(
+    state: web::Data<NasState>,
+    req: HttpRequest,
+    path: web::Path<i64>,
+    payload: web::Json<RenameFolderRequest>,
+) -> impl Responder {
+    if let Err(resp) = authorize(&state, &req, false).await {
+        return resp;
+    }
+    let token = session_token_from_request(&state, &req);
+    match rename_folder_inner(
+        path.into_inner(),
+        payload.name.clone(),
+        token,
+        None,
+        state.telegram.as_ref(),
+        &state,
+    )
+    .await
+    {
+        Ok(folder) => HttpResponse::Ok().json(folder),
+        Err(err) => HttpResponse::BadRequest().json(json!({ "error": err })),
+    }
+}
+
+#[put("/api/telegram/folders/{folder_id}/icon")]
+async fn set_telegram_folder_icon(
+    state: web::Data<NasState>,
+    req: HttpRequest,
+    path: web::Path<i64>,
+    payload: web::Json<FolderIconRequest>,
+) -> impl Responder {
+    if let Err(resp) = authorize(&state, &req, false).await {
+        return resp;
+    }
+    let token = session_token_from_request(&state, &req);
+    match set_folder_icon_inner(path.into_inner(), payload.icon.clone(), token, None, &state).await
+    {
+        Ok(folder) => HttpResponse::Ok().json(folder),
+        Err(err) => HttpResponse::BadRequest().json(json!({ "error": err })),
+    }
+}
+
+#[put("/api/telegram/folders/{folder_id}/password")]
+async fn set_telegram_folder_password(
+    state: web::Data<NasState>,
+    req: HttpRequest,
+    path: web::Path<i64>,
+    payload: web::Json<FolderPasswordRequest>,
+) -> impl Responder {
+    if let Err(resp) = authorize(&state, &req, false).await {
+        return resp;
+    }
+    let token = session_token_from_request(&state, &req);
+    let update = FolderPasswordUpdate {
+        password: payload.password.clone(),
+        remove_password: payload.remove_password,
+    };
+    match set_folder_password_inner(path.into_inner(), update, token, None, &state).await {
+        Ok(ok) => HttpResponse::Ok().json(json!({ "ok": ok })),
+        Err(err) => HttpResponse::BadRequest().json(json!({ "error": err })),
+    }
+}
+
+#[post("/api/telegram/folders/{folder_id}/verify-password")]
+async fn verify_telegram_folder_password(
+    state: web::Data<NasState>,
+    req: HttpRequest,
+    path: web::Path<i64>,
+    payload: web::Json<OwnerPasswordRequest>,
+) -> impl Responder {
+    if let Err(resp) = authorize(&state, &req, false).await {
+        return resp;
+    }
+    match verify_folder_password_inner(path.into_inner(), payload.password.clone(), &state).await {
+        Ok(ok) => HttpResponse::Ok().json(json!({ "ok": ok })),
+        Err(err) => HttpResponse::BadRequest().json(json!({ "error": err })),
+    }
+}
+
+#[post("/api/telegram/upload")]
+async fn upload_telegram_file(
+    state: web::Data<NasState>,
+    req: HttpRequest,
+    query: web::Query<UploadQuery>,
+    mut payload: web::Payload,
+) -> impl Responder {
+    if let Err(resp) = authorize(&state, &req, false).await {
+        return resp;
+    }
+    let file_name = query
+        .file_name
+        .clone()
+        .unwrap_or_else(|| "upload.bin".to_string());
+    let safe_name = safe_upload_name(&file_name);
+    let upload_dir = state.app_data_dir.join("api-uploads");
+    if let Err(err) = tokio::fs::create_dir_all(&upload_dir).await {
+        return HttpResponse::InternalServerError().json(json!({ "error": err.to_string() }));
+    }
+    let upload_path = upload_dir.join(format!("{}-{}", uuid::Uuid::new_v4(), safe_name));
+    let mut file = match tokio::fs::File::create(&upload_path).await {
+        Ok(file) => file,
+        Err(err) => {
+            return HttpResponse::InternalServerError().json(json!({ "error": err.to_string() }))
+        }
+    };
+
+    while let Some(chunk) = payload.next().await {
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(err) => {
+                return HttpResponse::BadRequest().json(json!({ "error": err.to_string() }))
+            }
+        };
+        if let Err(err) = tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await {
+            let _ = tokio::fs::remove_file(&upload_path).await;
+            return HttpResponse::InternalServerError().json(json!({ "error": err.to_string() }));
+        }
+    }
+    drop(file);
+
+    let token = session_token_from_request(&state, &req);
+    let result = upload_file_inner(
+        upload_path.to_string_lossy().to_string(),
+        query.folder_id,
+        None,
+        token,
+        None,
+        state.telegram.as_ref(),
+        &state,
+        None,
+    )
+    .await;
+    let _ = tokio::fs::remove_file(&upload_path).await;
+
+    match result {
+        Ok(message) => HttpResponse::Ok().json(json!({ "message": message })),
+        Err(err) => HttpResponse::BadRequest().json(json!({ "error": err })),
+    }
+}
+
+#[delete("/api/telegram/files/{message_id}")]
+async fn delete_telegram_file(
+    state: web::Data<NasState>,
+    req: HttpRequest,
+    path: web::Path<i32>,
+    query: web::Query<FilePathQuery>,
+) -> impl Responder {
+    if let Err(resp) = authorize(&state, &req, false).await {
+        return resp;
+    }
+    let token = session_token_from_request(&state, &req);
+    match delete_file_inner(
+        path.into_inner(),
+        query.folder_id,
+        token,
+        state.telegram.as_ref(),
+        &state,
+    )
+    .await
+    {
+        Ok(ok) => HttpResponse::Ok().json(json!({ "ok": ok })),
+        Err(err) => HttpResponse::BadRequest().json(json!({ "error": err })),
+    }
+}
+
+#[post("/api/telegram/files/move")]
+async fn move_telegram_files(
+    state: web::Data<NasState>,
+    req: HttpRequest,
+    payload: web::Json<MoveCopyRequest>,
+) -> impl Responder {
+    if let Err(resp) = authorize(&state, &req, false).await {
+        return resp;
+    }
+    let token = session_token_from_request(&state, &req);
+    match move_files_inner(
+        payload.message_ids.clone(),
+        payload.source_folder_id,
+        payload.target_folder_id,
+        token,
+        state.telegram.as_ref(),
+        &state,
+    )
+    .await
+    {
+        Ok(ok) => HttpResponse::Ok().json(json!({ "ok": ok })),
+        Err(err) => HttpResponse::BadRequest().json(json!({ "error": err })),
+    }
+}
+
+#[post("/api/telegram/files/copy")]
+async fn copy_telegram_files(
+    state: web::Data<NasState>,
+    req: HttpRequest,
+    payload: web::Json<MoveCopyRequest>,
+) -> impl Responder {
+    if let Err(resp) = authorize(&state, &req, false).await {
+        return resp;
+    }
+    let token = session_token_from_request(&state, &req);
+    match copy_files_inner(
+        payload.message_ids.clone(),
+        payload.source_folder_id,
+        payload.target_folder_id,
+        token,
+        state.telegram.as_ref(),
+        &state,
+    )
+    .await
+    {
+        Ok(ok) => HttpResponse::Ok().json(json!({ "ok": ok })),
+        Err(err) => HttpResponse::BadRequest().json(json!({ "error": err })),
+    }
+}
+
+#[get("/api/telegram/search")]
+async fn search_telegram_files(
+    state: web::Data<NasState>,
+    req: HttpRequest,
+    query: web::Query<SearchQuery>,
+) -> impl Responder {
+    if let Err(resp) = authorize(&state, &req, false).await {
+        return resp;
+    }
+    match search_global_inner(query.query.clone(), state.telegram.as_ref()).await {
+        Ok(files) => HttpResponse::Ok().json(files),
+        Err(err) => HttpResponse::BadRequest().json(json!({ "error": err })),
+    }
+}
+
 async fn telegram_session_connected(state: &NasState) -> bool {
     state.telegram.client.lock().await.is_some()
 }
@@ -1320,6 +1661,37 @@ async fn authorize(
         session_id: record.session.id,
         csrf_token: record.csrf_token,
     })
+}
+
+fn session_token_from_request(state: &NasState, req: &HttpRequest) -> Option<String> {
+    req.headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(str::to_owned)
+        .or_else(|| {
+            req.cookie(&state.session_cookie_name)
+                .map(|cookie| cookie.value().to_string())
+        })
+}
+
+fn safe_upload_name(name: &str) -> String {
+    let sanitized = name
+        .chars()
+        .map(|ch| match ch {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            ch if ch.is_control() => '_',
+            ch => ch,
+        })
+        .collect::<String>()
+        .trim()
+        .trim_matches('.')
+        .to_string();
+    if sanitized.is_empty() {
+        "upload.bin".to_string()
+    } else {
+        sanitized
+    }
 }
 
 fn client_ip(req: &HttpRequest) -> String {

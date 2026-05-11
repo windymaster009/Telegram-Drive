@@ -291,6 +291,8 @@ pub fn run() {
             commands::cmd_owner_session_status,
             commands::cmd_get_files,
             commands::cmd_upload_file,
+            commands::cmd_upload_file_to_api,
+            commands::cmd_download_file_from_api,
             commands::cmd_connect,
             commands::cmd_log,
             commands::cmd_delete_file,

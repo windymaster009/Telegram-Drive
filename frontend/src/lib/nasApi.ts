@@ -24,6 +24,7 @@ export const getApiBaseUrl = () => {
 };
 
 const TOKEN_STORAGE_KEY = "telegram_drive_access_token";
+const CSRF_STORAGE_KEY = "telegram_drive_csrf_token";
 
 export type GoogleDesktopLoginStatus =
   | { status: "pending" }
@@ -34,12 +35,16 @@ export const nasSession = {
   getAccessToken: () => localStorage.getItem(TOKEN_STORAGE_KEY),
   setAccessToken: (token: string) => localStorage.setItem(TOKEN_STORAGE_KEY, token),
   clearAccessToken: () => localStorage.removeItem(TOKEN_STORAGE_KEY),
+  getCsrfToken: () => localStorage.getItem(CSRF_STORAGE_KEY),
+  setCsrfToken: (token: string) => localStorage.setItem(CSRF_STORAGE_KEY, token),
+  clearCsrfToken: () => localStorage.removeItem(CSRF_STORAGE_KEY),
 };
 
 async function request<T>(path: string, init: RequestInit = {}, csrfToken?: string): Promise<T> {
   const headers = new Headers(init.headers || {});
   headers.set("Content-Type", "application/json");
-  if (csrfToken) headers.set("x-csrf-token", csrfToken);
+  const csrf = csrfToken || nasSession.getCsrfToken();
+  if (csrf) headers.set("x-csrf-token", csrf);
   const accessToken = nasSession.getAccessToken();
   if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`);
 
@@ -72,6 +77,13 @@ export const nasApi = {
     request<{ ok: boolean }>("/api/auth/logout", { method: "POST", body: JSON.stringify({}) }, csrfToken),
   me: () => request<MeResponse>("/api/auth/me"),
   telegramConnection: () => request<{ connected: boolean }>("/api/telegram/connection"),
+  streamUrl: (folderId: number | null, messageId: number) => {
+    const folder = folderId === null ? "home" : String(folderId);
+    const params = new URLSearchParams();
+    const accessToken = nasSession.getAccessToken();
+    if (accessToken) params.set("access_token", accessToken);
+    return `${getApiBaseUrl()}/api/telegram/stream/${encodeURIComponent(folder)}/${encodeURIComponent(String(messageId))}?${params.toString()}`;
+  },
   listTelegramFiles: (folderId: number | null) => {
     const params = new URLSearchParams();
     if (folderId !== null) params.set("folder_id", String(folderId));
@@ -79,6 +91,32 @@ export const nasApi = {
     return request<TelegramFile[]>(`/api/telegram/files${suffix}`);
   },
   scanTelegramFolders: () => request<TelegramFolder[]>("/api/telegram/folders/scan"),
+  createTelegramFolder: (name: string) =>
+    request<TelegramFolder>("/api/telegram/folders", { method: "POST", body: JSON.stringify({ name }) }),
+  deleteTelegramFolder: (folderId: number) =>
+    request<{ ok: boolean }>(`/api/telegram/folders/${folderId}`, { method: "DELETE" }),
+  renameTelegramFolder: (folderId: number, name: string) =>
+    request<TelegramFolder>(`/api/telegram/folders/${folderId}/name`, { method: "PUT", body: JSON.stringify({ name }) }),
+  setTelegramFolderIcon: (folderId: number, icon: string | null) =>
+    request<TelegramFolder>(`/api/telegram/folders/${folderId}/icon`, { method: "PUT", body: JSON.stringify({ icon }) }),
+  setTelegramFolderPassword: (folderId: number, payload: { password?: string; remove_password?: boolean }) =>
+    request<{ ok: boolean }>(`/api/telegram/folders/${folderId}/password`, { method: "PUT", body: JSON.stringify(payload) }),
+  verifyTelegramFolderPassword: (folderId: number, password: string) =>
+    request<{ ok: boolean }>(`/api/telegram/folders/${folderId}/verify-password`, { method: "POST", body: JSON.stringify({ password }) }),
+  deleteTelegramFile: (messageId: number, folderId: number | null) => {
+    const params = new URLSearchParams();
+    if (folderId !== null) params.set("folder_id", String(folderId));
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return request<{ ok: boolean }>(`/api/telegram/files/${messageId}${suffix}`, { method: "DELETE" });
+  },
+  moveTelegramFiles: (payload: { message_ids: number[]; source_folder_id: number | null; target_folder_id: number | null }) =>
+    request<{ ok: boolean }>("/api/telegram/files/move", { method: "POST", body: JSON.stringify(payload) }),
+  copyTelegramFiles: (payload: { message_ids: number[]; source_folder_id: number | null; target_folder_id: number | null }) =>
+    request<{ ok: boolean }>("/api/telegram/files/copy", { method: "POST", body: JSON.stringify(payload) }),
+  searchTelegramFiles: (query: string) => {
+    const params = new URLSearchParams({ query });
+    return request<TelegramFile[]>(`/api/telegram/search?${params.toString()}`);
+  },
   requestQr: (payload: { identifier: string }) =>
     request<QrTokenResponse>("/api/auth/qr/request", { method: "POST", body: JSON.stringify(payload) }),
   qrStatus: (token: string) =>

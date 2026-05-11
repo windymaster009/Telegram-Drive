@@ -1,10 +1,10 @@
 import { useEffect, useState, useRef } from 'react';
 import { X, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, Maximize } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';
 // Use the legacy build — the modern build uses Map.getOrInsertComputed()
 // which isn't available in Tauri's WebKit WebView
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 import type { TelegramFile } from '@shared/telegram';
+import { nasApi } from '../../lib/nasApi';
 
 // Use Vite's ?url suffix to get a properly bundled asset URL for the worker
 import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.mjs?url';
@@ -20,68 +20,24 @@ interface PdfViewerProps {
     activeFolderId: number | null;
 }
 
-type StreamInfo = {
-    token: string;
-    base_url: string;
-};
-
-type LocalPreviewInfo = {
-    id: string;
-    file_path: string;
-    tail_path: string | null;
-    tail_start: number | null;
-    file_name: string;
-    mime_type: string;
-    size: number;
-};
-
-type LocalPreviewStatus = {
-    downloaded: number;
-    size: number;
-    complete: boolean;
-    cancelled: boolean;
-    error: string | null;
-};
-
 export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalItems, activeFolderId }: PdfViewerProps) {
-    const [streamInfo, setStreamInfo] = useState<StreamInfo | null>(null);
     const [pdf, setPdf] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
     const [numPages, setNumPages] = useState<number>(0);
     const [scale, setScale] = useState<number>(1.2);
     const [loading, setLoading] = useState<boolean>(true);
     const [error, setError] = useState<string | null>(null);
-    const [progress, setProgress] = useState<LocalPreviewStatus | null>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const pdfRef = useRef<pdfjsLib.PDFDocumentProxy | null>(null);
 
-    // Fetch stream token once
+    // Load PDF document directly from the hosted backend stream.
     useEffect(() => {
-        invoke<StreamInfo>('cmd_get_stream_info').then(setStreamInfo).catch((err) => {
-            console.error("Failed to get stream token:", err);
-            setError("Failed to initialize stream");
-        });
-    }, []);
-
-    // Load PDF document from a local temp preview that is filled by Telegram in the background.
-    useEffect(() => {
-        if (!streamInfo) return;
-
         let cancelled = false;
-        let previewId: string | null = null;
-        let pollTimer: number | null = null;
         let loadingTask: pdfjsLib.PDFDocumentLoadingTask | null = null;
-
-        const cancelPreview = (id: string) => {
-            invoke('cmd_cancel_local_preview', { previewId: id }).catch(() => {
-                // Best-effort cleanup; Windows can keep the file briefly locked by the WebView.
-            });
-        };
 
         setLoading(true);
         setError(null);
         setPdf(null);
         setNumPages(0);
-        setProgress(null);
 
         const timeoutId = window.setTimeout(() => {
             if (cancelled) return;
@@ -90,84 +46,37 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
             loadingTask?.destroy();
         }, 90000);
 
-        invoke<LocalPreviewInfo>('cmd_start_local_preview', {
-            messageId: file.id,
-            folderId: activeFolderId
-        }).then((info) => {
-            previewId = info.id;
-            if (cancelled) {
-                cancelPreview(info.id);
-                return;
-            }
-
-            const params = new URLSearchParams({
-                token: streamInfo.token,
-                path: info.file_path,
-                size: String(info.size),
-                mime: info.mime_type,
-            });
-            if (info.tail_path && info.tail_start !== null) {
-                params.set('tail_path', info.tail_path);
-                params.set('tail_start', String(info.tail_start));
-            }
-            const localUrl = `${streamInfo.base_url}/local-preview/${encodeURIComponent(info.id)}/${encodeURIComponent(info.file_name)}?${params.toString()}`;
-            loadingTask = pdfjsLib.getDocument(localUrl);
-
-            pollTimer = window.setInterval(() => {
-                invoke<LocalPreviewStatus | null>('cmd_get_local_preview_status', { previewId: info.id })
-                    .then((status) => {
-                        if (!status || cancelled) return;
-                        setProgress(status);
-                        if (status.error) {
-                            setError(status.error);
-                            setLoading(false);
-                        }
-                        if (status.complete && pollTimer !== null) {
-                            window.clearInterval(pollTimer);
-                            pollTimer = null;
-                        }
-                    })
-                    .catch(() => {});
-            }, 500);
-
-            loadingTask.promise.then(
-                (pdfDoc) => {
-                    if (cancelled) {
-                        pdfDoc.destroy();
-                        return;
-                    }
-                    window.clearTimeout(timeoutId);
-                    if (pdfRef.current) {
-                        pdfRef.current.destroy();
-                    }
-                    pdfRef.current = pdfDoc;
-                    setPdf(pdfDoc);
-                    setNumPages(pdfDoc.numPages);
-                    setLoading(false);
-                },
-                (err) => {
-                    if (cancelled) return;
-                    window.clearTimeout(timeoutId);
-                    console.error("Error loading PDF:", err);
-                    setError(`Failed to load PDF document: ${err?.message || err || "Unknown error"}`);
-                    setLoading(false);
+        loadingTask = pdfjsLib.getDocument(nasApi.streamUrl(activeFolderId, file.id));
+        loadingTask.promise.then(
+            (pdfDoc) => {
+                if (cancelled) {
+                    pdfDoc.destroy();
+                    return;
                 }
-            );
-        }).catch((err) => {
-            if (cancelled) return;
-            window.clearTimeout(timeoutId);
-            setError(String(err || "Failed to prepare PDF preview"));
-            setLoading(false);
-        });
+                window.clearTimeout(timeoutId);
+                if (pdfRef.current) {
+                    pdfRef.current.destroy();
+                }
+                pdfRef.current = pdfDoc;
+                setPdf(pdfDoc);
+                setNumPages(pdfDoc.numPages);
+                setLoading(false);
+            },
+            (err) => {
+                if (cancelled) return;
+                window.clearTimeout(timeoutId);
+                console.error("Error loading PDF:", err);
+                setError(`Failed to load PDF document: ${err?.message || err || "Unknown error"}`);
+                setLoading(false);
+            }
+        );
 
         return () => {
             cancelled = true;
             window.clearTimeout(timeoutId);
-            if (pollTimer !== null) window.clearInterval(pollTimer);
             loadingTask?.destroy();
-            if (previewId) cancelPreview(previewId);
         };
-    }, [streamInfo, activeFolderId, file.id]);
+    }, [activeFolderId, file.id]);
 
     // Cleanup PDF document on unmount
     useEffect(() => {
@@ -295,9 +204,7 @@ export function PdfViewer({ file, onClose, onNext, onPrev, currentIndex, totalIt
                         <div className="w-10 h-10 border-4 border-telegram-primary border-t-transparent rounded-full animate-spin mb-4"></div>
                         <p>Loading document...</p>
                         <p className="text-xs text-white/50 mt-1">
-                            {progress && progress.size > 0
-                                ? `${Math.round((progress.downloaded / progress.size) * 100)}% cached locally`
-                                : 'Downloading from Telegram...'}
+                            Downloading from Telegram...
                         </p>
                     </div>
                 )}
