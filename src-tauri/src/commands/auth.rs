@@ -378,14 +378,14 @@ pub async fn owner_session_status_inner(
         None => None,
     };
 
-    match ensure_owner_client_connected(nas_state).await {
-        Ok(Some(_)) => Ok(OwnerSessionStatus {
+    match timeout(Duration::from_secs(5), ensure_owner_client_connected(nas_state)).await {
+        Ok(Ok(Some(_))) => Ok(OwnerSessionStatus {
             configured,
             connected: true,
             api_id,
             error: None,
         }),
-        Ok(None) => Ok(OwnerSessionStatus {
+        Ok(Ok(None)) => Ok(OwnerSessionStatus {
             configured,
             connected: false,
             api_id,
@@ -394,11 +394,20 @@ pub async fn owner_session_status_inner(
                     .to_string(),
             ),
         }),
-        Err(err) => Ok(OwnerSessionStatus {
+        Ok(Err(err)) => Ok(OwnerSessionStatus {
             configured,
             connected: false,
             api_id,
             error: Some(format!("Telegram owner reconnect failed: {}", err)),
+        }),
+        Err(_) => Ok(OwnerSessionStatus {
+            configured,
+            connected: false,
+            api_id,
+            error: Some(
+                "Telegram owner reconnect timed out. You can still request a new login code."
+                    .to_string(),
+            ),
         }),
     }
 }
