@@ -378,7 +378,7 @@ pub async fn owner_session_status_inner(
         None => None,
     };
 
-    match timeout(Duration::from_secs(5), ensure_owner_client_connected(nas_state)).await {
+    match timeout(Duration::from_secs(25), ensure_owner_client_connected(nas_state)).await {
         Ok(Ok(Some(_))) => Ok(OwnerSessionStatus {
             configured,
             connected: true,
@@ -405,7 +405,7 @@ pub async fn owner_session_status_inner(
             connected: false,
             api_id,
             error: Some(
-                "Telegram owner reconnect timed out. You can still request a new login code."
+                "Telegram owner reconnect timed out. The saved session may still be loading; try Sync or check backend logs before requesting a new login code."
                     .to_string(),
             ),
         }),
@@ -596,6 +596,7 @@ pub async fn sign_in_inner(state: &TelegramState, code: String) -> Result<AuthRe
 
             match client.is_authorized().await {
                 Ok(true) => {
+                    let _ = client.get_me().await;
                     log::info!("Successfully logged in.");
                     Ok(AuthResult {
                         success: true,
@@ -653,6 +654,7 @@ pub async fn check_password_inner(
     match client.check_password(pw_token, password.as_str()).await {
         Ok(_user) => match client.is_authorized().await {
             Ok(true) => {
+                let _ = client.get_me().await;
                 log::info!("2FA Success.");
                 Ok(AuthResult {
                     success: true,

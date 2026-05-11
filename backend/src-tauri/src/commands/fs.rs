@@ -795,9 +795,10 @@ pub async fn cmd_upload_file_to_api(
         );
     }
 
-    let bytes = tokio::fs::read(&path)
+    let file = tokio::fs::File::open(&path)
         .await
-        .map_err(|err| format!("Could not read file for upload: {}", err))?;
+        .map_err(|err| format!("Could not open file for upload: {}", err))?;
+    let stream = tokio_util::io::ReaderStream::new(file);
     if !tid.is_empty() {
         let _ = app_handle.emit(
             "upload-progress",
@@ -824,7 +825,7 @@ pub async fn cmd_upload_file_to_api(
         .post(url)
         .header("content-type", "application/octet-stream")
         .header("content-length", size.to_string())
-        .body(bytes);
+        .body(reqwest::Body::wrap_stream(stream));
     if let Some(token) = access_token.filter(|value| !value.trim().is_empty()) {
         request = request.bearer_auth(token);
     }
