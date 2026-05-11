@@ -15,9 +15,10 @@ use super::models::{
 };
 use super::state::NasState;
 use crate::commands::auth::{
-    check_password_inner, logout_inner, owner_session_status_inner, request_owner_code_inner,
-    sign_in_inner,
+    check_password_inner, ensure_owner_client_connected, logout_inner, owner_session_status_inner,
+    request_owner_code_inner, sign_in_inner,
 };
+use crate::commands::fs::{get_files_inner, scan_folders_for_user};
 
 const SESSION_TTL_SECONDS: i64 = 60 * 60 * 24 * 14;
 const QR_TTL_SECONDS: i64 = 60 * 10;
@@ -62,6 +63,9 @@ pub fn configure_api(cfg: &mut web::ServiceConfig) {
         .service(owner_sign_in)
         .service(owner_check_password)
         .service(owner_logout)
+        .service(telegram_connection)
+        .service(list_telegram_files)
+        .service(scan_telegram_folders)
         .service(list_audit_logs);
 }
 
@@ -134,6 +138,11 @@ struct OwnerSignInRequest {
 #[derive(serde::Deserialize)]
 struct OwnerPasswordRequest {
     password: String,
+}
+
+#[derive(serde::Deserialize)]
+struct FilesQuery {
+    folder_id: Option<i64>,
 }
 
 #[post("/api/auth/google")]
@@ -1112,6 +1121,62 @@ async fn owner_logout(state: web::Data<NasState>, req: HttpRequest) -> impl Resp
     match logout_inner(state.telegram.as_ref()).await {
         Ok(ok) => HttpResponse::Ok().json(json!({ "ok": ok })),
         Err(err) => HttpResponse::InternalServerError().json(json!({ "error": err })),
+    }
+}
+
+#[get("/api/telegram/connection")]
+async fn telegram_connection(state: web::Data<NasState>, req: HttpRequest) -> impl Responder {
+    if let Err(resp) = authorize(&state, &req, false).await {
+        return resp;
+    }
+
+    match ensure_owner_client_connected(&state).await {
+        Ok(Some(_)) => HttpResponse::Ok().json(json!({ "connected": true })),
+        Ok(None) => HttpResponse::Ok().json(json!({ "connected": false })),
+        Err(err) => HttpResponse::InternalServerError().json(json!({ "error": err })),
+    }
+}
+
+#[get("/api/telegram/files")]
+async fn list_telegram_files(
+    state: web::Data<NasState>,
+    req: HttpRequest,
+    query: web::Query<FilesQuery>,
+) -> impl Responder {
+    if let Err(resp) = authorize(&state, &req, false).await {
+        return resp;
+    }
+
+    if let Err(err) = ensure_owner_client_connected(&state).await {
+        return HttpResponse::InternalServerError().json(json!({ "error": err }));
+    }
+
+    match get_files_inner(query.folder_id, state.telegram.as_ref()).await {
+        Ok(files) => HttpResponse::Ok().json(files),
+        Err(err) => HttpResponse::BadRequest().json(json!({ "error": err })),
+    }
+}
+
+#[get("/api/telegram/folders/scan")]
+async fn scan_telegram_folders(state: web::Data<NasState>, req: HttpRequest) -> impl Responder {
+    let ctx = match authorize(&state, &req, false).await {
+        Ok(ctx) => ctx,
+        Err(resp) => return resp,
+    };
+
+    let user = match state.db.get_user_by_id(ctx.user_id).await {
+        Ok(Some(user)) => user,
+        Ok(None) => return HttpResponse::Unauthorized().json(json!({ "error": "Unknown user" })),
+        Err(err) => return HttpResponse::InternalServerError().json(json!({ "error": err })),
+    };
+
+    if let Err(err) = ensure_owner_client_connected(&state).await {
+        return HttpResponse::InternalServerError().json(json!({ "error": err }));
+    }
+
+    match scan_folders_for_user(state.telegram.as_ref(), &state, user).await {
+        Ok(folders) => HttpResponse::Ok().json(folders),
+        Err(err) => HttpResponse::BadRequest().json(json!({ "error": err })),
     }
 }
 

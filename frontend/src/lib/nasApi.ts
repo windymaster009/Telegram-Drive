@@ -9,6 +9,7 @@ import type {
   QrTokenResponse,
   SystemStatus,
 } from "@shared/nas";
+import type { TelegramFile, TelegramFolder } from "@shared/telegram";
 
 export const getApiBaseUrl = () => {
   const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL;
@@ -70,6 +71,14 @@ export const nasApi = {
   logout: (csrfToken?: string) =>
     request<{ ok: boolean }>("/api/auth/logout", { method: "POST", body: JSON.stringify({}) }, csrfToken),
   me: () => request<MeResponse>("/api/auth/me"),
+  telegramConnection: () => request<{ connected: boolean }>("/api/telegram/connection"),
+  listTelegramFiles: (folderId: number | null) => {
+    const params = new URLSearchParams();
+    if (folderId !== null) params.set("folder_id", String(folderId));
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return request<TelegramFile[]>(`/api/telegram/files${suffix}`);
+  },
+  scanTelegramFolders: () => request<TelegramFolder[]>("/api/telegram/folders/scan"),
   requestQr: (payload: { identifier: string }) =>
     request<QrTokenResponse>("/api/auth/qr/request", { method: "POST", body: JSON.stringify(payload) }),
   qrStatus: (token: string) =>

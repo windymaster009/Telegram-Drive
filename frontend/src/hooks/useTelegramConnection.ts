@@ -7,7 +7,7 @@ import { useConfirm } from '../context/ConfirmContext';
 import type { TelegramFolder } from '@shared/telegram';
 import type { AppUser } from '@shared/nas';
 import { useNetworkStatus } from './useNetworkStatus';
-import { nasSession } from '../lib/nasApi';
+import { nasApi, nasSession } from '../lib/nasApi';
 
 export function useTelegramConnection(onLogoutParent: () => void, currentUser?: AppUser) {
     const queryClient = useQueryClient();
@@ -46,35 +46,14 @@ export function useTelegramConnection(onLogoutParent: () => void, currentUser?: 
                     setActiveFolderId(savedActiveFolderId);
                 }
 
-                const apiIdStr = await _store.get<string>('api_id');
-                if (apiIdStr) {
-                    try {
-                        const apiId = parseInt(apiIdStr as string);
-                        await invoke('cmd_connect', { apiId });
-                        setIsConnected(true);
+                try {
+                    const { connected } = await nasApi.telegramConnection();
+                    setIsConnected(connected);
+                    if (connected) {
                         queryClient.invalidateQueries({ queryKey: ['files'] });
-                    } catch {
-                        const shouldRetry = window.confirm("Failed to connect to Telegram. Retry?");
-                        if (shouldRetry) {
-                            window.location.reload();
-                        } else {
-                            if (_store) {
-                                await _store.delete('api_id');
-                                await _store.save();
-                            }
-                            onLogoutParent();
-                        }
                     }
-                } else {
-                    try {
-                        const connected = await invoke<boolean>('cmd_check_connection');
-                        setIsConnected(connected);
-                        if (connected) {
-                            queryClient.invalidateQueries({ queryKey: ['files'] });
-                        }
-                    } catch {
-                        setIsConnected(false);
-                    }
+                } catch {
+                    setIsConnected(false);
                 }
 
             } catch {
@@ -95,7 +74,7 @@ export function useTelegramConnection(onLogoutParent: () => void, currentUser?: 
             }
 
             try {
-                const connected = await invoke<boolean>('cmd_check_connection');
+                const { connected } = await nasApi.telegramConnection();
                 if (!cancelled) setIsConnected(connected);
             } catch {
                 if (!cancelled) setIsConnected(false);
@@ -163,7 +142,7 @@ export function useTelegramConnection(onLogoutParent: () => void, currentUser?: 
         if (!store) return;
         setIsSyncing(true);
         try {
-            const foundFolders = await invoke<TelegramFolder[]>('cmd_scan_folders', { accessToken: nasSession.getAccessToken(), actor });
+            const foundFolders = await nasApi.scanTelegramFolders();
             const merged = [...folders];
             let added = 0;
             for (const f of foundFolders) {

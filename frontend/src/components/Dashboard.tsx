@@ -31,7 +31,7 @@ import { useFileOperations } from '../hooks/useFileOperations';
 import { useFileUpload } from '../hooks/useFileUpload';
 import { useFileDownload } from '../hooks/useFileDownload';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
-import { nasSession } from '../lib/nasApi';
+import { nasApi, nasSession } from '../lib/nasApi';
 
 interface DashboardProps {
     onLogout: () => void;
@@ -199,10 +199,10 @@ export function Dashboard({ onLogout, permissions, allowFolderManagement = true,
 
     const { data: allFiles = [], isLoading, error } = useQuery({
         queryKey: ['files', activeFolderId],
-        queryFn: () => invoke<any[]>('cmd_get_files', { folderId: activeFolderId }).then(res => res.map(f => ({
+        queryFn: () => nasApi.listTelegramFiles(activeFolderId).then(res => res.map(f => ({
             ...f,
             sizeStr: formatBytes(f.size),
-            type: f.icon_type || (f.name.endsWith('/') ? 'folder' : 'file')
+            type: f.type || (f.name.endsWith('/') ? 'folder' : 'file')
         }))),
         enabled: !!store && hasFolderAccess && activeFolderAllowed && !activeFolderNeedsUnlock,
     });

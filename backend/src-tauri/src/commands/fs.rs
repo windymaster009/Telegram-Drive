@@ -914,6 +914,13 @@ pub async fn cmd_get_files(
     folder_id: Option<i64>,
     state: State<'_, TelegramState>,
 ) -> Result<Vec<FileMetadata>, String> {
+    get_files_inner(folder_id, state.inner()).await
+}
+
+pub async fn get_files_inner(
+    folder_id: Option<i64>,
+    state: &TelegramState,
+) -> Result<Vec<FileMetadata>, String> {
     let client_opt = { state.client.lock().await.clone() };
     if client_opt.is_none() {
         log::info!("[MOCK] Returning mock files for folder {:?}", folder_id);
@@ -1151,6 +1158,14 @@ pub async fn cmd_scan_folders(
     nas_state: State<'_, NasState>,
 ) -> Result<Vec<FolderMetadata>, String> {
     let user = user_from_access_token_or_desktop_admin(&nas_state, access_token, actor).await;
+    scan_folders_for_user(state.inner(), nas_state.inner(), user).await
+}
+
+pub async fn scan_folders_for_user(
+    state: &TelegramState,
+    nas_state: &NasState,
+    user: AppUser,
+) -> Result<Vec<FolderMetadata>, String> {
     let client_opt = { state.client.lock().await.clone() };
     if client_opt.is_none() {
         return Ok(Vec::new());
