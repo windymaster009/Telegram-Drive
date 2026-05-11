@@ -1,8 +1,8 @@
 # Telegram Drive
 
-Telegram Drive is a local desktop app that uses your Telegram account as file storage. It is built with Tauri 2, Rust, React, TypeScript, Vite, MongoDB, Google OAuth, and the Grammers Telegram client.
+Telegram Drive is a desktop/web app that uses your Telegram account as file storage. It is built with Tauri 2, Rust, React, TypeScript, Vite, MongoDB, Google OAuth, and the Grammers Telegram client.
 
-Files are stored in Telegram chats/channels. The app provides a local desktop UI, a local HTTP API, user login, admin approval, folder permissions, previews, downloads, and uploads.
+Files are stored in Telegram chats/channels. The app provides a desktop UI, an HTTP API, user login, admin approval, folder permissions, previews, downloads, and uploads.
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-blue)
@@ -40,14 +40,98 @@ Files are stored in Telegram chats/channels. The app provides a local desktop UI
 
 ```text
 Telegram-Drive/
-|-- frontend/        React/Vite UI, admin console, API client
-|-- backend/         Rust/Tauri app, REST API, Telegram, MongoDB
+|-- frontend/        React/Vite UI, admin console, public API client
+|-- backend/         Rust code for both the desktop app and API server
+|   |-- src-tauri/   Tauri desktop app shell and bundled native code
+|   `-- src/         Standalone HTTP API entry point for server/Pi hosting
 |-- shared/          Shared TypeScript types
 |-- screenshots/     README images
 |-- scripts/         Workspace helper scripts
 |-- package.json     Root workspace scripts
 `-- README.md
 ```
+
+## Frontend, Backend, and Pi Server
+
+This project has one folder named `backend/`, but it is used in two ways:
+
+- `backend/src-tauri/` is the Tauri desktop app backend. It is compiled into the Windows/macOS/Linux app and is needed when exporting the installer.
+- `backend/src/` is the standalone HTTP API server. This is the part you host on a Raspberry Pi or other server.
+- `frontend/` is the React UI. It becomes static files when built, but it still needs an API URL to log in, list files, upload, download, and stream previews.
+
+Do not delete `backend/` just because the frontend is built. The frontend folder still needs backend code during development and desktop export because Tauri uses `backend/src-tauri/` to create the installable app.
+
+For a normal hosted setup:
+
+```text
+Friend's Windows app
+  = built frontend
+  + bundled Tauri desktop code from backend/src-tauri/
+  + API requests to your Pi
+
+Raspberry Pi/server
+  = standalone API from backend/src/
+  + backend/.env secrets
+  + backend/.data Telegram session files
+  + MongoDB connection
+```
+
+Only the API server needs to keep running on the Pi. The Windows installer does not need your friend to run the Pi code locally, but the installed app will only work while the Pi API is online and reachable.
+
+## Recommended Development and Hosting Flow
+
+Use local development when changing the UI or backend:
+
+```bash
+npm install
+npm run dev:web
+```
+
+Use the Pi for production API hosting:
+
+```bash
+cd backend
+npm install
+npm run api
+```
+
+For production on the Pi, set `backend/.env` carefully:
+
+```text
+TELEGRAM_DRIVE_API_HOST=127.0.0.1
+TELEGRAM_DRIVE_API_PORT=14201
+TELEGRAM_DRIVE_PUBLIC_API_BASE_URL=https://api.example.com
+MONGODB_URI=...
+JWT_SECRET=...
+TELEGRAM_SESSION_ENCRYPTION_KEY=...
+GOOGLE_OAUTH_CLIENT_ID=...
+GOOGLE_OAUTH_CLIENT_SECRET=...
+GOOGLE_OAUTH_REDIRECT_URI=https://api.example.com/auth/google/callback
+```
+
+Keep secrets only in `backend/.env` on the Pi. Do not put MongoDB passwords, Google client secrets, JWT secrets, Telegram API hashes, or session files in `frontend/.env`.
+
+Before building the desktop installer for friends, point the frontend to the Pi API in `frontend/.env`:
+
+```text
+VITE_API_BASE_URL=https://api.example.com
+VITE_GOOGLE_OAUTH_CLIENT_ID=<google-oauth-client-id>
+VITE_GOOGLE_OAUTH_REDIRECT_URI=https://api.example.com/auth/google/callback
+```
+
+Then build the Windows installer:
+
+```bash
+npm run build
+```
+
+The install wizard is created under:
+
+```text
+backend/target/release/bundle/nsis/
+```
+
+If you change the Pi API URL, Google OAuth redirect URL, or frontend `.env`, rebuild the frontend/desktop installer before sharing a new `.exe`.
 
 ## Requirements
 
