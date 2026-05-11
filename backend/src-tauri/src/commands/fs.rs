@@ -257,6 +257,28 @@ fn text_message_name(message_id: i32, text: &str) -> String {
     format!("{}-{}.txt", preview, message_id)
 }
 
+fn strip_upload_temp_prefix(name: &str) -> String {
+    if name.len() <= 37 {
+        return name.to_string();
+    }
+
+    let prefix = &name[..36];
+    let separator = name.as_bytes()[36];
+    let uuidish = prefix.chars().enumerate().all(|(idx, ch)| {
+        if matches!(idx, 8 | 13 | 18 | 23) {
+            ch == '-' || ch == '_'
+        } else {
+            ch.is_ascii_hexdigit()
+        }
+    });
+
+    if uuidish && (separator == b'-' || separator == b'_') {
+        name[37..].to_string()
+    } else {
+        name.to_string()
+    }
+}
+
 struct TextMessageEntry {
     id: i32,
     date: String,
@@ -1276,7 +1298,7 @@ pub async fn get_files_inner(
         if let Some(doc) = msg.media() {
             let (name, size, mime, ext) = match doc {
                 Media::Document(d) => {
-                    let n = d.name().to_string();
+                    let n = strip_upload_temp_prefix(&d.name().to_string());
                     let s = d.size();
                     let m = d.mime_type().map(|s| s.to_string());
                     let e = std::path::Path::new(&n)
@@ -1392,6 +1414,7 @@ pub async fn search_global_inner(
                                 _ => None,
                             })
                             .unwrap_or("Unknown".to_string());
+                        let name = strip_upload_temp_prefix(&name);
                         let size = doc.size as u64;
                         let mime = doc.mime_type.clone();
                         let ext = std::path::Path::new(&name)
@@ -1449,6 +1472,7 @@ pub async fn search_global_inner(
                                 _ => None,
                             })
                             .unwrap_or("Unknown".to_string());
+                        let name = strip_upload_temp_prefix(&name);
                         let size = doc.size as u64;
                         let mime = doc.mime_type.clone();
                         let ext = std::path::Path::new(&name)

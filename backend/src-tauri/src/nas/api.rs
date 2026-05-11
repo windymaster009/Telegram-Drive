@@ -1385,11 +1385,14 @@ async fn upload_telegram_file(
         .clone()
         .unwrap_or_else(|| "upload.bin".to_string());
     let safe_name = safe_upload_name(&file_name);
-    let upload_dir = state.app_data_dir.join("api-uploads");
+    let upload_dir = state
+        .app_data_dir
+        .join("api-uploads")
+        .join(uuid::Uuid::new_v4().to_string());
     if let Err(err) = tokio::fs::create_dir_all(&upload_dir).await {
         return HttpResponse::InternalServerError().json(json!({ "error": err.to_string() }));
     }
-    let upload_path = upload_dir.join(format!("{}-{}", uuid::Uuid::new_v4(), safe_name));
+    let upload_path = upload_dir.join(safe_name);
     let mut file = match tokio::fs::File::create(&upload_path).await {
         Ok(file) => file,
         Err(err) => {
@@ -1405,7 +1408,7 @@ async fn upload_telegram_file(
             }
         };
         if let Err(err) = tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await {
-            let _ = tokio::fs::remove_file(&upload_path).await;
+            let _ = tokio::fs::remove_dir_all(&upload_dir).await;
             return HttpResponse::InternalServerError().json(json!({ "error": err.to_string() }));
         }
     }
@@ -1423,7 +1426,7 @@ async fn upload_telegram_file(
         None,
     )
     .await;
-    let _ = tokio::fs::remove_file(&upload_path).await;
+    let _ = tokio::fs::remove_dir_all(&upload_dir).await;
 
     match result {
         Ok(message) => HttpResponse::Ok().json(json!({ "message": message })),
