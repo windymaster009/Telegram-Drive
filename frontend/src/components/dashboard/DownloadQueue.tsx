@@ -14,7 +14,7 @@ export function DownloadQueue({ items, onClearFinished, onCancelAll }: DownloadQ
     const completedCount = items.filter(i => i.status === 'success').length;
 
     return (
-        <div className="fixed bottom-4 right-4 w-80 bg-telegram-surface border border-telegram-border rounded-xl shadow-2xl overflow-hidden z-[100]">
+        <div className="fixed bottom-3 left-3 right-3 z-[100] overflow-hidden rounded-xl border border-telegram-border bg-telegram-surface shadow-2xl sm:bottom-4 sm:left-auto sm:right-4 sm:w-80">
             <div className="p-3 border-b border-telegram-border bg-telegram-hover flex justify-between items-center">
                 <div className="flex items-center gap-2">
                     <Download className="w-4 h-4 text-telegram-secondary" />

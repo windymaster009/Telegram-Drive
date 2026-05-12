@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from "@tan
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-shell";
 import { QRCodeSVG } from "qrcode.react";
-import { Chrome, Copy, Shield, UserPlus, Users, History, KeyRound, ScanQrCode, HardDrive, LogOut, ChevronDown, Skull } from "lucide-react";
+import { Chrome, Copy, Shield, UserPlus, Users, History, KeyRound, ScanQrCode, HardDrive, LogOut, ChevronDown, Skull, X } from "lucide-react";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Dashboard } from "./components/Dashboard";
 import { UpdateBanner } from "./components/UpdateBanner";
@@ -492,8 +492,13 @@ function LoginPage({
 
     setLoading(true);
     try {
-      await open(url.toString());
-    } catch {
+      await openExternalUrl(url.toString());
+    } catch (error) {
+      if (isDesktopRuntime()) {
+        toast.error((error as Error).message || "Could not open Google in your browser");
+        setLoading(false);
+        return;
+      }
       const browserWindow = window.open(url.toString(), "_blank", "noopener,noreferrer");
       if (!browserWindow) {
         window.location.href = url.toString();
@@ -546,20 +551,20 @@ function LoginPage({
   }, [publicQr, onLoggedIn]);
 
   return (
-    <div className="flex h-full items-center justify-center p-6">
-      <div className="grid w-full max-w-5xl gap-6 lg:grid-cols-[1.1fr_0.9fr]">
-        <div className="rounded-[36px] border border-white/10 bg-white/6 p-8 backdrop-blur-xl">
-          <p className="mb-3 text-xs uppercase tracking-[0.32em] text-cyan-300">Access Portal</p>
-          <h1 className="text-4xl font-semibold tracking-tight">Google sign-in for Telegram Drive</h1>
-          <p className="mt-4 max-w-2xl text-sm leading-7 text-slate-300">
+    <div className="auth-screen flex h-full items-center justify-center p-6">
+      <div className="auth-layout grid w-full max-w-5xl gap-6 lg:grid-cols-[1.1fr_0.9fr]">
+        <div className="auth-hero rounded-[36px] border border-white/10 bg-white/6 p-8 backdrop-blur-xl">
+          <p className="auth-eyebrow mb-3 text-xs uppercase tracking-[0.32em] text-cyan-300">Access Portal</p>
+          <h1 className="auth-title text-4xl font-semibold tracking-tight">Telegram Drive</h1>
+          <p className="auth-copy mt-4 max-w-2xl text-sm leading-7 text-slate-300">
             Users sign in with Google and wait for admin approval before accessing Telegram storage. Telegram API ID, API Hash, and MTProto login stay in the backend.
           </p>
-          <div className="mt-8 grid gap-4 sm:grid-cols-2">
+          <div className="auth-feature-grid mt-8 grid gap-4 sm:grid-cols-2">
             <Feature icon={Users} title="Approval required" copy="New Google users are created as pending until an admin approves them." />
             <Feature icon={Shield} title="Backend-only secrets" copy="Google, MongoDB, JWT, Telegram, and session encryption secrets never go to the frontend." />
           </div>
         </div>
-        <form onSubmit={handleSubmit} className="rounded-[36px] border border-white/10 bg-black/25 p-8 backdrop-blur-2xl">
+        <form onSubmit={handleSubmit} className="auth-login-form rounded-[36px] border border-white/10 bg-black/25 p-8 backdrop-blur-2xl">
           <button
             type="button"
             onClick={handleGoogleLogin}
@@ -686,21 +691,21 @@ function AdminConsole({
   }
 
   return (
-    <div className="flex h-full flex-col">
-      <header className="border-b border-white/10 bg-black/20 px-6 py-4 backdrop-blur-xl">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div>
-            <p className="text-xs uppercase tracking-[0.32em] text-cyan-300">Admin Console</p>
-            <h1 className="text-2xl font-semibold">Telegram NAS control plane</h1>
-            <p className="mt-1 text-sm text-slate-300">
+    <div className="admin-console flex h-full flex-col">
+      <header className="admin-header border-b border-white/10 bg-black/20 px-6 py-4 backdrop-blur-xl">
+        <div className="admin-header-main flex flex-wrap items-center justify-between gap-4">
+          <div className="admin-title-block">
+            <p className="admin-eyebrow text-xs uppercase tracking-[0.32em] text-cyan-300">Admin Console</p>
+            <h1 className="admin-heading text-2xl font-semibold">Telegram NAS control plane</h1>
+            <p className="admin-subtitle mt-1 text-sm text-slate-300">
               Signed in as {me.user.display_name}. Owner Telegram session is {ownerConnected ? "connected" : "waiting"}.
             </p>
           </div>
-          <button onClick={onLogout} className="rounded-2xl border border-white/10 px-4 py-2 text-sm text-slate-200 transition hover:bg-white/8">
+          <button onClick={onLogout} className="admin-signout rounded-2xl border border-white/10 px-4 py-2 text-sm text-slate-200 transition hover:bg-white/8">
             <span className="inline-flex items-center gap-2"><LogOut className="h-4 w-4" /> Sign Out</span>
           </button>
         </div>
-        <div className="mt-4 flex flex-wrap gap-2">
+        <div className="admin-tabs mt-4 flex flex-wrap gap-2">
           {tabs.map((item) => (
             <button
               key={item.id}
@@ -713,7 +718,7 @@ function AdminConsole({
         </div>
       </header>
 
-      <section className="min-h-0 flex-1 overflow-auto p-6">
+      <section className="admin-content min-h-0 flex-1 overflow-auto p-6">
         {tab === "owner" && <OwnerTelegramPanel csrfToken={csrfToken} onOpenStorage={() => setTab("storage")} />}
         {tab === "users" && <UsersPanel csrfToken={csrfToken} />}
         {tab === "sessions" && <SessionsPanel csrfToken={csrfToken} />}
@@ -907,27 +912,27 @@ function OwnerTelegramPanel({ csrfToken, onOpenStorage }: { csrfToken: string | 
 
   if (ownerStatus.data?.connected) {
     return (
-      <div className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
-        <div className="rounded-[32px] border border-white/10 bg-white/6 p-6">
-          <p className="text-xs uppercase tracking-[0.32em] text-cyan-300">Owner Session</p>
-          <h2 className="mt-2 text-2xl font-semibold">One Telegram account for the whole NAS</h2>
-          <p className="mt-4 text-sm leading-7 text-slate-300">
+      <div className="admin-owner-grid grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
+        <div className="admin-card rounded-[32px] border border-white/10 bg-white/6 p-6">
+          <p className="admin-eyebrow text-xs uppercase tracking-[0.32em] text-cyan-300">Owner Session</p>
+          <h2 className="admin-card-title mt-2 text-2xl font-semibold">One Telegram account for the whole NAS</h2>
+          <p className="admin-card-copy mt-4 text-sm leading-7 text-slate-300">
             The owner Telegram session is active. Normal users can now use their assigned storage access without seeing Telegram credentials.
           </p>
-          <div className="mt-6 rounded-3xl border border-white/10 bg-black/20 p-4 text-sm">
+          <div className="admin-status-box mt-6 rounded-3xl border border-white/10 bg-black/20 p-4 text-sm">
             <p>Configured: <strong>Yes</strong></p>
             <p>Connected: <strong className="text-emerald-200">Yes</strong></p>
           </div>
         </div>
-        <div className="rounded-[32px] border border-emerald-400/20 bg-emerald-400/8 p-8">
-          <div className="inline-flex rounded-full border border-emerald-300/30 bg-emerald-300/10 p-3 text-emerald-200">
+        <div className="admin-card admin-success-card rounded-[32px] border border-emerald-400/20 bg-emerald-400/8 p-8">
+          <div className="admin-card-icon inline-flex rounded-full border border-emerald-300/30 bg-emerald-300/10 p-3 text-emerald-200">
             <Shield className="h-6 w-6" />
           </div>
-          <h2 className="mt-5 text-3xl font-semibold tracking-tight">Login Success</h2>
-          <p className="mt-3 max-w-2xl text-sm leading-7 text-slate-300">
+          <h2 className="admin-success-title mt-5 text-3xl font-semibold tracking-tight">Login Success</h2>
+          <p className="admin-card-copy mt-3 max-w-2xl text-sm leading-7 text-slate-300">
             Telegram Drive is connected to the owner Telegram account and ready to manage storage.
           </p>
-          <div className="mt-8 grid gap-3 sm:grid-cols-2">
+          <div className="admin-action-grid mt-8 grid gap-3 sm:grid-cols-2">
             <button
               type="button"
               onClick={onOpenStorage}
@@ -949,14 +954,14 @@ function OwnerTelegramPanel({ csrfToken, onOpenStorage }: { csrfToken: string | 
   }
 
   return (
-    <div className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
-      <div className="rounded-[32px] border border-white/10 bg-white/6 p-6">
-        <p className="text-xs uppercase tracking-[0.32em] text-cyan-300">Owner Session</p>
-        <h2 className="mt-2 text-2xl font-semibold">One Telegram account for the whole NAS</h2>
-        <p className="mt-4 text-sm leading-7 text-slate-300">
+    <div className="admin-owner-grid grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
+      <div className="admin-card rounded-[32px] border border-white/10 bg-white/6 p-6">
+        <p className="admin-eyebrow text-xs uppercase tracking-[0.32em] text-cyan-300">Owner Session</p>
+        <h2 className="admin-card-title mt-2 text-2xl font-semibold">One Telegram account for the whole NAS</h2>
+        <p className="admin-card-copy mt-4 text-sm leading-7 text-slate-300">
           Configure the owner account once. Normal users never see API credentials or MTProto login prompts.
         </p>
-        <div className="mt-6 rounded-3xl border border-white/10 bg-black/20 p-4 text-sm">
+        <div className="admin-status-box mt-6 rounded-3xl border border-white/10 bg-black/20 p-4 text-sm">
           <p>Configured: <strong>{ownerConfigured ? "Yes" : "No"}</strong></p>
           <p>Connected: <strong>{ownerStatus.data?.connected ? "Yes" : "No"}</strong></p>
         </div>
@@ -980,8 +985,8 @@ function OwnerTelegramPanel({ csrfToken, onOpenStorage }: { csrfToken: string | 
           </button>
         )}
       </div>
-      <div className="rounded-[32px] border border-white/10 bg-black/25 p-6">
-        <div className="grid items-start gap-4 md:grid-cols-2">
+      <div className="admin-card rounded-[32px] border border-white/10 bg-black/25 p-6">
+        <div className="admin-form-grid grid items-start gap-4 md:grid-cols-2">
           <Field
             label={ownerConfigured ? `Telegram API ID${ownerStatus.data?.api_id ? ` (${ownerStatus.data.api_id} saved)` : ""}` : "Telegram API ID"}
             value={apiId}
@@ -1212,9 +1217,9 @@ function UsersPanel({ csrfToken }: { csrfToken: string | null }) {
   };
 
   return (
-    <div className="grid gap-6 xl:grid-cols-[0.8fr_1.2fr]">
-      <form onSubmit={createUser} className="rounded-[32px] border border-white/10 bg-black/25 p-6">
-        <p className="text-xs uppercase tracking-[0.32em] text-cyan-300">Create User</p>
+    <div className="users-panel-grid grid gap-6 xl:grid-cols-[0.8fr_1.2fr]">
+      <form onSubmit={createUser} className="user-create-card rounded-[32px] border border-white/10 bg-black/25 p-6">
+        <p className="admin-eyebrow text-xs uppercase tracking-[0.32em] text-cyan-300">Create User</p>
         <div className="mt-4 space-y-4">
           <Field label="Username" value={draft.username} onChange={(value) => setDraft((prev) => ({ ...prev, username: value }))} />
           <Field label="Display name" value={draft.display_name} onChange={(value) => setDraft((prev) => ({ ...prev, display_name: value }))} />
@@ -1233,17 +1238,17 @@ function UsersPanel({ csrfToken }: { csrfToken: string | null }) {
         </div>
       </form>
 
-      <div className="space-y-6">
-        <div className="rounded-[32px] border border-white/10 bg-white/6 p-6">
+      <div className="user-management-column space-y-6">
+        <div className="users-list-card rounded-[32px] border border-white/10 bg-white/6 p-6">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <p className="text-xs uppercase tracking-[0.32em] text-cyan-300">Users</p>
+            <p className="admin-eyebrow text-xs uppercase tracking-[0.32em] text-cyan-300">Users</p>
             <span className="rounded-full border border-amber-300/25 bg-amber-300/10 px-3 py-1 text-xs text-amber-100">
               {(users.data || []).filter((user) => user.approval_status === "pending" || !user.is_approved).length} pending
             </span>
           </div>
-          <div className="mt-4 grid gap-3">
+          <div className="users-list mt-4 grid gap-3">
             {users.data?.map((user) => (
-              <button key={user.id} onClick={() => { setSelectedUser(user); setPermissionDraft([]); setQr(null); }} className="rounded-2xl border border-white/10 bg-black/25 p-4 text-left transition hover:bg-white/8">
+              <button key={user.id} onClick={() => { setSelectedUser(user); setPermissionDraft([]); setQr(null); }} className="user-row rounded-2xl border border-white/10 bg-black/25 p-4 text-left transition hover:bg-white/8">
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <p className="font-medium">{user.display_name}</p>
@@ -1274,8 +1279,8 @@ function UsersPanel({ csrfToken }: { csrfToken: string | null }) {
         </div>
 
         {selectedUser && (
-          <div className="rounded-[32px] border border-white/10 bg-black/25 p-6">
-            <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="user-detail-card rounded-[32px] border border-white/10 bg-black/25 p-6">
+            <div className="user-detail-header flex flex-wrap items-center justify-between gap-3">
               <div>
                 <p className="text-lg font-semibold">{selectedUser.display_name}</p>
                 <p className="text-sm text-slate-300">@{selectedUser.username}</p>
@@ -1286,7 +1291,20 @@ function UsersPanel({ csrfToken }: { csrfToken: string | null }) {
                   {selectedUser.is_approved ? " · can access storage" : " · waiting for approval"}
                 </p>
               </div>
-              <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedUser(null);
+                  setPermissionDraft([]);
+                  setQr(null);
+                }}
+                className="user-detail-close rounded-full border border-white/10 bg-white/5 p-3 text-slate-200 transition hover:bg-white/10"
+                aria-label="Close user details"
+                title="Close user details"
+              >
+                <X className="h-5 w-5" />
+              </button>
+              <div className="user-action-grid flex flex-wrap gap-2">
                 {!selectedUserIsApproved && (
                   <button
                     type="button"
@@ -1538,6 +1556,15 @@ function googleRedirectUri() {
 
 function isDesktopRuntime() {
   return Boolean((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
+}
+
+async function openExternalUrl(url: string) {
+  try {
+    await invoke("plugin:opener|open_url", { url });
+    return;
+  } catch {
+    await open(url);
+  }
 }
 
 async function waitForGoogleDesktopLogin(state: string) {

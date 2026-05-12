@@ -163,6 +163,7 @@ export function Dashboard({ onLogout, permissions, allowFolderManagement = true,
     const [unlockedFolders, setUnlockedFolders] = useState<Set<number>>(() => new Set());
     const [previewContextFiles, setPreviewContextFiles] = useState<TelegramFile[]>([]);
     const [previewContextIndex, setPreviewContextIndex] = useState(-1);
+    const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
 
     useEffect(() => {
         if (store) {
@@ -477,6 +478,7 @@ export function Dashboard({ onLogout, permissions, allowFolderManagement = true,
 
     const selectFolder = (folderId: number | null) => {
         if (folderId === null) {
+            setIsMobileSidebarOpen(false);
             setActiveFolderId(null);
             return;
         }
@@ -487,6 +489,7 @@ export function Dashboard({ onLogout, permissions, allowFolderManagement = true,
             setFolderUnlock(folder);
             return;
         }
+        setIsMobileSidebarOpen(false);
         setActiveFolderId(folderId);
     };
 
@@ -588,6 +591,8 @@ export function Dashboard({ onLogout, permissions, allowFolderManagement = true,
                 folders={visibleFolders}
                 activeFolderId={activeFolderId}
                 setActiveFolderId={selectFolder}
+                mobileOpen={isMobileSidebarOpen}
+                onCloseMobile={() => setIsMobileSidebarOpen(false)}
                 onDrop={handleDropOnFolder}
                 onDelete={handleFolderDelete}
                 onRename={(id) => {
@@ -614,10 +619,11 @@ export function Dashboard({ onLogout, permissions, allowFolderManagement = true,
                 showSync={Boolean(currentUser)}
             />
 
-            <main className="flex-1 flex flex-col" onClick={(e) => { if (e.target === e.currentTarget) setSelectedIds([]); }}>
+            <main className="flex min-w-0 flex-1 flex-col" onClick={(e) => { if (e.target === e.currentTarget) setSelectedIds([]); }}>
                 <TopBar
                     currentFolderName={currentFolderName}
                     selectedIds={selectedIds}
+                    onOpenSidebar={() => setIsMobileSidebarOpen(true)}
                     onShowMoveModal={() => setFolderTransferMode('move')}
                     onShowCopyModal={() => setFolderTransferMode('copy')}
                     onBulkDownload={handleBulkDownload}
@@ -646,7 +652,7 @@ export function Dashboard({ onLogout, permissions, allowFolderManagement = true,
                     )}
                 />
                 {searchTerm.length > 2 && (
-                    <div className="px-6 pt-4 pb-0">
+                    <div className="px-3 pt-3 pb-0 sm:px-6 sm:pt-4">
                         <h2 className="text-sm font-medium text-telegram-subtext">
                             Search Results for <span className="text-telegram-primary">"{searchTerm}"</span>
                         </h2>

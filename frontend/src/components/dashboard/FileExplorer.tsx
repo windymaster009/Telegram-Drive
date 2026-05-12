@@ -164,7 +164,7 @@ export function FileExplorer({
 
     if (loading) {
         return (
-            <div className="flex-1 p-6 flex justify-center items-center text-telegram-subtext flex-col gap-4">
+            <div className="flex flex-1 flex-col items-center justify-center gap-4 p-4 text-telegram-subtext sm:p-6">
                 <div className="w-8 h-8 border-4 border-telegram-primary border-t-transparent rounded-full animate-spin"></div>
                 Loading your files...
             </div>
@@ -172,12 +172,12 @@ export function FileExplorer({
     }
 
     if (error) {
-        return <div className="flex-1 p-6 flex justify-center items-center text-red-400">Error loading files</div>
+        return <div className="flex flex-1 items-center justify-center p-4 text-red-400 sm:p-6">Error loading files</div>
     }
 
     if (files.length === 0) {
         return (
-            <div className="flex-1 p-6 overflow-auto">
+            <div className="flex-1 overflow-auto p-3 sm:p-6">
                 <EmptyState onUpload={canWrite ? onManualUpload : undefined} />
             </div>
         );
@@ -186,7 +186,7 @@ export function FileExplorer({
     return (
         <div
             ref={parentRef}
-            className="flex-1 p-6 overflow-auto custom-scrollbar"
+            className="flex-1 overflow-auto p-3 custom-scrollbar sm:p-6"
             onClick={(e) => {
                 if (e.target === e.currentTarget) onSelectionClear();
             }}
@@ -194,7 +194,7 @@ export function FileExplorer({
             {viewMode === 'grid' ? (
                 <>
 
-                    <div className="flex items-center gap-2 mb-4 text-xs text-telegram-subtext">
+                    <div className="mb-4 flex flex-wrap items-center gap-2 text-xs text-telegram-subtext">
                         <span>Sort by:</span>
                         <button
                             onClick={() => handleSort('name')}
@@ -276,16 +276,15 @@ export function FileExplorer({
                 </>
             ) : (
                 <div className="flex flex-col w-full">
-                    {/* List Header */}
-                    <div className="grid grid-cols-[2rem_2fr_6rem_8rem] gap-4 px-4 py-2 text-xs font-semibold text-telegram-subtext border-b border-telegram-border mb-2 select-none items-center">
+                    <div className="mb-2 grid grid-cols-[1.5rem_minmax(0,1fr)] items-center gap-3 border-b border-telegram-border px-3 py-2 text-xs font-semibold text-telegram-subtext select-none md:grid-cols-[2rem_minmax(0,2fr)_6rem_8rem] md:gap-4 md:px-4">
                         <div className="text-center">#</div>
                         <button onClick={() => handleSort('name')} className="flex items-center gap-1 hover:text-telegram-text transition-colors">
                             Name <SortIcon field="name" />
                         </button>
-                        <button onClick={() => handleSort('size')} className="flex items-center gap-1 justify-end hover:text-telegram-text transition-colors">
+                        <button onClick={() => handleSort('size')} className="hidden items-center justify-end gap-1 transition-colors hover:text-telegram-text md:flex">
                             Size <SortIcon field="size" />
                         </button>
-                        <button onClick={() => handleSort('date')} className="flex items-center gap-1 justify-end hover:text-telegram-text transition-colors">
+                        <button onClick={() => handleSort('date')} className="hidden items-center justify-end gap-1 transition-colors hover:text-telegram-text md:flex">
                             Date <SortIcon field="date" />
                         </button>
                     </div>

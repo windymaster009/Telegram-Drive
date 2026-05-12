@@ -14,11 +14,26 @@ interface ProgressPayload {
     percent: number;
 }
 
+const MAX_UPLOAD_BATCH_SIZE = 10;
+const MAX_QUEUED_UPLOADS = 30;
+const UPLOAD_SPACING_MS = 12_000;
+
+function delay(ms: number) {
+    return new Promise(resolve => window.setTimeout(resolve, ms));
+}
+
+function parseFloodWaitSeconds(error: unknown) {
+    const message = String(error);
+    const match = message.match(/FLOOD_WAIT_(\d+)/);
+    return match ? Number(match[1]) : 0;
+}
+
 export function useFileUpload(activeFolderId: number | null, store: Store | null) {
     const queryClient = useQueryClient();
     const [uploadQueue, setUploadQueue] = useState<QueueItem[]>([]);
     const [processing, setProcessing] = useState(false);
     const [initialized, setInitialized] = useState(false);
+    const [pausedUntil, setPausedUntil] = useState(0);
     const cancelledRef = useRef<Set<string>>(new Set());
 
     // Listen for progress events from Rust
@@ -70,11 +85,15 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
 
     useEffect(() => {
         if (processing) return;
+        if (pausedUntil > Date.now()) {
+            const timer = window.setTimeout(() => setPausedUntil(0), pausedUntil - Date.now());
+            return () => window.clearTimeout(timer);
+        }
         const nextItem = uploadQueue.find(i => i.status === 'pending');
         if (nextItem) {
             processItem(nextItem);
         }
-    }, [uploadQueue, processing]);
+    }, [uploadQueue, processing, pausedUntil]);
 
     const processItem = async (item: QueueItem) => {
         setProcessing(true);
@@ -97,12 +116,20 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
             }
         } catch (e) {
             if (!cancelledRef.current.has(item.id)) {
+                const floodWaitSeconds = parseFloodWaitSeconds(e);
                 setUploadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'error', error: String(e) } : i));
-                toast.error(`Upload failed for ${item.path.split('/').pop()}: ${e}`);
+                if (floodWaitSeconds > 0) {
+                    const waitMs = Math.max(floodWaitSeconds * 1000, UPLOAD_SPACING_MS);
+                    setPausedUntil(Date.now() + waitMs);
+                    toast.error(`Telegram asked us to slow down. Uploads paused for about ${Math.ceil(waitMs / 60000)} minute(s).`);
+                } else {
+                    toast.error(`Upload failed for ${item.path.split('/').pop()}: ${e}`);
+                }
             } else {
                 cancelledRef.current.delete(item.id);
             }
         } finally {
+            await delay(UPLOAD_SPACING_MS);
             setProcessing(false);
         }
     };
@@ -111,7 +138,14 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
         try {
             const selected = await open({ multiple: true, directory: false });
             if (selected) {
-                const paths = Array.isArray(selected) ? selected : [selected];
+                const selectedPaths = Array.isArray(selected) ? selected : [selected];
+                const activeCount = uploadQueue.filter(item => item.status === 'pending' || item.status === 'uploading').length;
+                const availableSlots = Math.max(0, MAX_QUEUED_UPLOADS - activeCount);
+                if (availableSlots === 0) {
+                    toast.error(`Upload queue is full. Keep it under ${MAX_QUEUED_UPLOADS} files.`);
+                    return;
+                }
+                const paths = selectedPaths.slice(0, Math.min(MAX_UPLOAD_BATCH_SIZE, availableSlots));
                 const newItems: QueueItem[] = paths.map((path: string) => ({
                     id: Math.random().toString(36).substr(2, 9),
                     path,
@@ -120,6 +154,9 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
                 }));
                 setUploadQueue(prev => [...prev, ...newItems]);
                 toast.info(`Queued ${paths.length} files for upload`);
+                if (selectedPaths.length > paths.length) {
+                    toast.info(`Only queued ${paths.length} files to keep upload activity gentle.`);
+                }
             }
         } catch {
             toast.error("Failed to open file dialog");
