@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
+use std::time::Instant;
 
 use tokio::sync::Mutex;
 
@@ -43,6 +44,8 @@ pub struct NasState {
     pub rate_limits: Arc<Mutex<HashMap<String, Vec<i64>>>>,
     pub desktop_google_logins: Arc<Mutex<HashMap<String, DesktopGoogleLoginResult>>>,
     pub preview_downloads: Arc<Mutex<HashMap<String, PreviewDownloadJob>>>,
+    pub upload_gate: Arc<Mutex<()>>,
+    pub last_telegram_upload_at: Arc<Mutex<Option<Instant>>>,
     pub telegram: Arc<TelegramState>,
 }
 
@@ -80,6 +83,8 @@ impl NasState {
             rate_limits: Arc::new(Mutex::new(HashMap::new())),
             desktop_google_logins: Arc::new(Mutex::new(HashMap::new())),
             preview_downloads: Arc::new(Mutex::new(HashMap::new())),
+            upload_gate: Arc::new(Mutex::new(())),
+            last_telegram_upload_at: Arc::new(Mutex::new(None)),
             telegram,
         })
     }

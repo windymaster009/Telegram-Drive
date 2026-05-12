@@ -2,8 +2,9 @@ use actix_web::cookie::{Cookie, SameSite};
 use actix_web::{delete, get, http::header, post, put, web, HttpRequest, HttpResponse, Responder};
 use futures::StreamExt;
 use serde_json::json;
+use std::time::{Duration as StdDuration, Instant};
 use time::Duration;
-use tokio::time::{timeout, Duration as TokioDuration};
+use tokio::time::{sleep, timeout, Duration as TokioDuration};
 
 use super::crypto::{
     encrypt_secret, generate_token, hash_password, now_ts, sha256_hex, verify_password,
@@ -31,6 +32,9 @@ use crate::models::FolderMetadata;
 const SESSION_TTL_SECONDS: i64 = 60 * 60 * 24 * 14;
 const QR_TTL_SECONDS: i64 = 60 * 10;
 const DESKTOP_GOOGLE_LOGIN_TTL_SECONDS: i64 = 60 * 5;
+const DEFAULT_TELEGRAM_UPLOAD_DELAY_MS: u64 = 12_000;
+const USER_UPLOAD_LIMIT_PER_HOUR: usize = 30;
+const GLOBAL_UPLOAD_LIMIT_PER_HOUR: usize = 120;
 
 #[derive(Clone)]
 struct RequestContext {
@@ -1440,8 +1444,33 @@ async fn upload_telegram_file(
     query: web::Query<UploadQuery>,
     mut payload: web::Payload,
 ) -> impl Responder {
-    if let Err(resp) = authorize(&state, &req, false).await {
-        return resp;
+    let ctx = match authorize(&state, &req, false).await {
+        Ok(ctx) => ctx,
+        Err(resp) => return resp,
+    };
+    if !state
+        .allow_rate(
+            format!("telegram-upload-user:{}", ctx.user_id),
+            USER_UPLOAD_LIMIT_PER_HOUR,
+            60 * 60,
+        )
+        .await
+    {
+        return HttpResponse::TooManyRequests().json(json!({
+            "error": "Upload limit reached. Please wait before uploading more files."
+        }));
+    }
+    if !state
+        .allow_rate(
+            "telegram-upload-global".to_string(),
+            GLOBAL_UPLOAD_LIMIT_PER_HOUR,
+            60 * 60,
+        )
+        .await
+    {
+        return HttpResponse::TooManyRequests().json(json!({
+            "error": "Server upload queue is busy. Please try again later."
+        }));
     }
     let file_name = query
         .file_name
@@ -1477,6 +1506,18 @@ async fn upload_telegram_file(
     }
     drop(file);
 
+    let _upload_guard = state.upload_gate.lock().await;
+    let upload_delay = telegram_upload_delay();
+    let wait_for = {
+        let last_upload_guard = state.last_telegram_upload_at.lock().await;
+        last_upload_guard
+            .as_ref()
+            .and_then(|last_upload| upload_delay.checked_sub(last_upload.elapsed()))
+    };
+    if let Some(wait_for) = wait_for {
+        sleep(wait_for).await;
+    }
+
     let token = session_token_from_request(&state, &req);
     let result = upload_file_inner(
         upload_path.to_string_lossy().to_string(),
@@ -1489,6 +1530,10 @@ async fn upload_telegram_file(
         None,
     )
     .await;
+    {
+        let mut last_upload_guard = state.last_telegram_upload_at.lock().await;
+        *last_upload_guard = Some(Instant::now());
+    }
     let _ = tokio::fs::remove_dir_all(&upload_dir).await;
 
     match result {
@@ -1765,6 +1810,14 @@ fn client_ip(req: &HttpRequest) -> String {
         .realip_remote_addr()
         .unwrap_or("local")
         .to_string()
+}
+
+fn telegram_upload_delay() -> StdDuration {
+    std::env::var("TELEGRAM_DRIVE_UPLOAD_DELAY_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(StdDuration::from_millis)
+        .unwrap_or_else(|| StdDuration::from_millis(DEFAULT_TELEGRAM_UPLOAD_DELAY_MS))
 }
 
 fn user_agent(req: &HttpRequest) -> String {

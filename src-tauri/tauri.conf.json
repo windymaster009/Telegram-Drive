@@ -12,7 +12,7 @@
   "version": "1.2.0",
   "identifier": "com.cameronamer.telegramdrive",
   "build": {
-    "beforeDevCommand": "npm run dev --prefix ../frontend",
+    "beforeDevCommand": "npm run dev --prefix ../frontend -- --host 0.0.0.0",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "npm run build --prefix ../frontend",
     "frontendDist": "../../frontend/dist"

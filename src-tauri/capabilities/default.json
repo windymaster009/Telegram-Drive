@@ -5,6 +5,7 @@
   ],
   "permissions": [
     "core:default",
+    "opener:default",
     "shell:allow-open",
     "store:default",
     "dialog:default",
