@@ -34,7 +34,7 @@ pub struct FolderPasswordUpdate {
     pub remove_password: Option<bool>,
 }
 
-#[derive(Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FolderActor {
     pub user_id: String,
@@ -458,7 +458,7 @@ pub async fn delete_folder_inner(
             channel: input_channel,
         })
         .await
-        .map_err(|e| format!("Failed to delete channel: {}", e))?;
+        .map_err(|e| format!("Failed to delete channel: {}", map_error(e)))?;
 
     nas_state
         .db
@@ -517,7 +517,7 @@ pub async fn rename_folder_inner(
                     title: format!("{} [TD]", trimmed),
                 })
                 .await
-                .map_err(|e| format!("Failed to rename folder: {}", e))?;
+                .map_err(|e| format!("Failed to rename folder: {}", map_error(e)))?;
         }
     }
 
@@ -673,6 +673,7 @@ pub async fn cmd_upload_file(
         state.inner(),
         nas_state.inner(),
         Some(bw_state.inner()),
+        None,
     )
     .await
 }
@@ -686,20 +687,10 @@ pub async fn upload_file_inner(
     state: &TelegramState,
     nas_state: &NasState,
     bw_state: Option<&BandwidthManager>,
+    actor: Option<FolderActor>,
 ) -> Result<String, String> {
-    if let Some(token) = access_token.filter(|value| !value.trim().is_empty()) {
-        match user_from_access_token(nas_state, Some(token)).await {
-            Ok(user) => {
-                ensure_can_manage_optional_folder(nas_state, &user, folder_id).await?;
-            }
-            Err(err) => {
-                log::warn!(
-                    "Upload permission check skipped because NAS session was not usable: {}",
-                    err
-                );
-            }
-        }
-    }
+    let user = user_from_access_token_or_desktop_admin(nas_state, access_token.clone(), actor).await;
+    ensure_can_manage_optional_folder(nas_state, &user, folder_id).await?;
     let size = std::fs::metadata(&path).map_err(|e| e.to_string())?.len();
     if let Some(bw_state) = bw_state {
         bw_state.can_transfer(size)?;
@@ -948,6 +939,7 @@ pub async fn cmd_delete_file(
         access_token,
         state.inner(),
         nas_state.inner(),
+        None,
     )
     .await
 }
@@ -958,8 +950,9 @@ pub async fn delete_file_inner(
     access_token: Option<String>,
     state: &TelegramState,
     nas_state: &NasState,
+    actor: Option<FolderActor>,
 ) -> Result<bool, String> {
-    let user = user_from_access_token_or_desktop_admin(nas_state, access_token, None).await;
+    let user = user_from_access_token_or_desktop_admin(nas_state, access_token, actor).await;
     ensure_can_manage_optional_folder(nas_state, &user, folder_id).await?;
     let client_opt = { state.client.lock().await.clone() };
     if client_opt.is_none() {
@@ -976,7 +969,7 @@ pub async fn delete_file_inner(
     client
         .delete_messages(peer, &[message_id])
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(map_error)?;
     Ok(true)
 }
 
@@ -1162,6 +1155,7 @@ pub async fn cmd_move_files(
         access_token,
         state.inner(),
         nas_state.inner(),
+        None,
     )
     .await
 }
@@ -1173,8 +1167,9 @@ pub async fn move_files_inner(
     access_token: Option<String>,
     state: &TelegramState,
     nas_state: &NasState,
+    actor: Option<FolderActor>,
 ) -> Result<bool, String> {
-    let user = user_from_access_token_or_desktop_admin(nas_state, access_token, None).await;
+    let user = user_from_access_token_or_desktop_admin(nas_state, access_token, actor).await;
     ensure_can_manage_optional_folder(nas_state, &user, source_folder_id).await?;
     ensure_can_manage_optional_folder(nas_state, &user, target_folder_id).await?;
     if source_folder_id == target_folder_id {
@@ -1200,13 +1195,13 @@ pub async fn move_files_inner(
         .await
     {
         Ok(_) => {}
-        Err(e) => return Err(format!("Forward failed: {}", e)),
+        Err(e) => return Err(format!("Forward failed: {}", map_error(e))),
     }
 
     let source_peer = resolve_peer_ref(&client, source_folder_id, &state.peer_cache).await?;
     match client.delete_messages(source_peer, &message_ids).await {
         Ok(_) => {}
-        Err(e) => return Err(format!("Delete original failed: {}", e)),
+        Err(e) => return Err(format!("Delete original failed: {}", map_error(e))),
     }
 
     Ok(true)
@@ -1228,6 +1223,7 @@ pub async fn cmd_copy_files(
         access_token,
         state.inner(),
         nas_state.inner(),
+        None,
     )
     .await
 }
@@ -1239,8 +1235,9 @@ pub async fn copy_files_inner(
     access_token: Option<String>,
     state: &TelegramState,
     nas_state: &NasState,
+    actor: Option<FolderActor>,
 ) -> Result<bool, String> {
-    let user = user_from_access_token_or_desktop_admin(nas_state, access_token, None).await;
+    let user = user_from_access_token_or_desktop_admin(nas_state, access_token, actor).await;
     ensure_can_write_optional_folder(nas_state, &user, target_folder_id).await?;
     if source_folder_id == target_folder_id {
         return Ok(true);
@@ -1265,7 +1262,7 @@ pub async fn copy_files_inner(
         .await
     {
         Ok(_) => {}
-        Err(e) => return Err(format!("Copy failed: {}", e)),
+        Err(e) => return Err(format!("Copy failed: {}", map_error(e))),
     }
 
     Ok(true)

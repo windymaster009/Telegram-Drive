@@ -228,6 +228,7 @@ pub fn run() {
             ))?;
             tauri::async_runtime::block_on(seed_owner_config_from_env(&nas_state))?;
             app.manage(nas_state.clone());
+            nas::telegram_queue::start_telegram_job_worker(nas_state.clone());
 
             let nas_state_for_reconnect = nas_state.clone();
             tauri::async_runtime::spawn(async move {

@@ -247,3 +247,103 @@ pub struct AuthClaims {
     pub role: String,
     pub exp: usize,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TelegramJobType {
+    CreateFolder,
+    UploadFile,
+    RenameFolder,
+    DeleteFolder,
+    DeleteFile,
+    MoveFiles,
+    CopyFiles,
+}
+
+impl TelegramJobType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::CreateFolder => "create_folder",
+            Self::UploadFile => "upload_file",
+            Self::RenameFolder => "rename_folder",
+            Self::DeleteFolder => "delete_folder",
+            Self::DeleteFile => "delete_file",
+            Self::MoveFiles => "move_files",
+            Self::CopyFiles => "copy_files",
+        }
+    }
+}
+
+impl From<String> for TelegramJobType {
+    fn from(value: String) -> Self {
+        match value.as_str() {
+            "create_folder" => Self::CreateFolder,
+            "upload_file" => Self::UploadFile,
+            "rename_folder" => Self::RenameFolder,
+            "delete_folder" => Self::DeleteFolder,
+            "delete_file" => Self::DeleteFile,
+            "move_files" => Self::MoveFiles,
+            "copy_files" => Self::CopyFiles,
+            _ => Self::UploadFile,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TelegramJobStatus {
+    Queued,
+    Running,
+    Completed,
+    Failed,
+    Delayed,
+}
+
+impl TelegramJobStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Delayed => "delayed",
+        }
+    }
+}
+
+impl From<String> for TelegramJobStatus {
+    fn from(value: String) -> Self {
+        match value.as_str() {
+            "running" => Self::Running,
+            "completed" => Self::Completed,
+            "failed" => Self::Failed,
+            "delayed" => Self::Delayed,
+            _ => Self::Queued,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelegramJobView {
+    pub id: String,
+    pub job_type: TelegramJobType,
+    pub user_id: String,
+    pub payload_json: String,
+    pub status: TelegramJobStatus,
+    pub priority: i32,
+    pub attempts: i32,
+    pub max_attempts: i32,
+    pub run_after: i64,
+    pub locked_at: Option<i64>,
+    pub locked_by: Option<String>,
+    pub error_message: Option<String>,
+    pub result_json: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelegramJobStatusResponse {
+    pub job: TelegramJobView,
+    pub result: Option<serde_json::Value>,
+}

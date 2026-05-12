@@ -57,6 +57,7 @@ fn main() -> std::io::Result<()> {
         app_lib::seed_owner_config_from_env(&nas_state)
             .await
             .map_err(std::io::Error::other)?;
+        app_lib::nas::telegram_queue::start_telegram_job_worker(nas_state.clone());
 
         let server =
             app_lib::server::start_server(nas_state, host.clone(), port, stream_token).await?;

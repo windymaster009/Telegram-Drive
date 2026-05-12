@@ -1,7 +1,7 @@
 {
   "name": "@telegram-drive/backend",
   "private": true,
-  "version": "1.1.8",
+  "version": "1.2.1",
   "type": "module",
   "scripts": {
     "predev": "node scripts/check-tauri-prereqs.mjs",
