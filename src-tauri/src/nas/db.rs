@@ -1,7 +1,7 @@
 use futures::TryStreamExt;
 use mongodb::{
     bson::{doc, Bson, DateTime},
-    options::{ClientOptions, IndexOptions, UpdateOptions},
+    options::{ClientOptions, FindOneAndUpdateOptions, IndexOptions, ReturnDocument, UpdateOptions},
     Client, Collection, IndexModel,
 };
 use serde::{Deserialize, Serialize};
@@ -10,7 +10,7 @@ use uuid::Uuid;
 use super::crypto::verify_password;
 use super::models::{
     AccessLevel, AppRole, AppSession, AppUser, ApprovalStatus, AuditEntry, FolderRecordView,
-    PermissionAssignment,
+    PermissionAssignment, TelegramJobStatus, TelegramJobType, TelegramJobView,
 };
 
 #[derive(Clone)]
@@ -19,6 +19,8 @@ pub struct Database {
     sessions: Collection<SessionRecordDoc>,
     permissions: Collection<PermissionRecord>,
     folders: Collection<FolderRecord>,
+    telegram_jobs: Collection<TelegramJobRecord>,
+    telegram_queue_state: Collection<TelegramQueueStateRecord>,
     qr_tokens: Collection<QrTokenRecord>,
     secrets: Collection<SecretRecord>,
     audit_logs: Collection<AuditRecord>,
@@ -159,6 +161,38 @@ struct AuditRecord {
     created_at: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TelegramJobRecord {
+    id: String,
+    job_type: String,
+    user_id: String,
+    payload_json: String,
+    status: String,
+    priority: i32,
+    attempts: i32,
+    max_attempts: i32,
+    run_after: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    locked_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    locked_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result_json: Option<String>,
+    created_at: i64,
+    updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TelegramQueueStateRecord {
+    key: String,
+    until: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+    updated_at: i64,
+}
+
 impl Database {
     pub async fn new() -> Result<Self, String> {
         let uri = std::env::var("MONGODB_URI")
@@ -177,6 +211,8 @@ impl Database {
             sessions: db.collection("sessions"),
             permissions: db.collection("permissions"),
             folders: db.collection("folders"),
+            telegram_jobs: db.collection("telegram_jobs"),
+            telegram_queue_state: db.collection("telegram_queue_state"),
             qr_tokens: db.collection("qr_tokens"),
             secrets: db.collection("secrets"),
             audit_logs: db.collection("audit_logs"),
@@ -190,6 +226,11 @@ impl Database {
         self.ensure_unique_index(&self.users, "email").await?;
         self.ensure_unique_index(&self.sessions, "id").await?;
         self.ensure_unique_index(&self.folders, "telegramFolderId")
+            .await?;
+        self.ensure_unique_index(&self.telegram_jobs, "id").await?;
+        self.ensure_index(&self.telegram_jobs, doc! { "status": 1, "run_after": 1, "priority": -1, "created_at": 1 }, "telegram_jobs_scheduler").await?;
+        self.ensure_index(&self.telegram_jobs, doc! { "locked_at": 1, "locked_by": 1 }, "telegram_jobs_locks").await?;
+        self.ensure_unique_index(&self.telegram_queue_state, "key")
             .await?;
         self.ensure_unique_index(&self.qr_tokens, "token_hash")
             .await?;
@@ -219,6 +260,44 @@ impl Database {
             .await
             .map_err(|err| err.to_string())?;
         Ok(())
+    }
+
+    async fn ensure_index<T>(
+        &self,
+        collection: &Collection<T>,
+        keys: mongodb::bson::Document,
+        name: &str,
+    ) -> Result<(), String>
+    where
+        T: Send + Sync,
+    {
+        let options = IndexOptions::builder().name(name.to_string()).build();
+        let model = IndexModel::builder().keys(keys).options(options).build();
+        collection
+            .create_index(model, None)
+            .await
+            .map_err(|err| err.to_string())?;
+        Ok(())
+    }
+
+    fn telegram_job_view(record: TelegramJobRecord) -> TelegramJobView {
+        TelegramJobView {
+            id: record.id,
+            job_type: TelegramJobType::from(record.job_type),
+            user_id: record.user_id,
+            payload_json: record.payload_json,
+            status: TelegramJobStatus::from(record.status),
+            priority: record.priority,
+            attempts: record.attempts,
+            max_attempts: record.max_attempts,
+            run_after: record.run_after,
+            locked_at: record.locked_at,
+            locked_by: record.locked_by,
+            error_message: record.error_message,
+            result_json: record.result_json,
+            created_at: record.created_at,
+            updated_at: record.updated_at,
+        }
     }
 
     pub async fn setup_required(&self) -> Result<bool, String> {
@@ -897,6 +976,226 @@ impl Database {
             .await
             .map_err(|err| err.to_string())?;
         Ok(())
+    }
+
+    pub async fn enqueue_telegram_job(
+        &self,
+        job_type: TelegramJobType,
+        user_id: String,
+        payload_json: String,
+        priority: i32,
+        max_attempts: i32,
+        run_after: i64,
+    ) -> Result<TelegramJobView, String> {
+        let now = crate::nas::crypto::now_ts();
+        let record = TelegramJobRecord {
+            id: Uuid::new_v4().to_string(),
+            job_type: job_type.as_str().to_string(),
+            user_id,
+            payload_json,
+            status: TelegramJobStatus::Queued.as_str().to_string(),
+            priority,
+            attempts: 0,
+            max_attempts,
+            run_after,
+            locked_at: None,
+            locked_by: None,
+            error_message: None,
+            result_json: None,
+            created_at: now,
+            updated_at: now,
+        };
+        self.telegram_jobs
+            .insert_one(record.clone(), None)
+            .await
+            .map_err(|err| err.to_string())?;
+        Ok(Self::telegram_job_view(record))
+    }
+
+    pub async fn get_telegram_job(&self, id: &str) -> Result<Option<TelegramJobView>, String> {
+        Ok(self
+            .telegram_jobs
+            .find_one(doc! { "id": id }, None)
+            .await
+            .map_err(|err| err.to_string())?
+            .map(Self::telegram_job_view))
+    }
+
+    pub async fn claim_next_telegram_job(
+        &self,
+        worker_id: &str,
+        now: i64,
+        stale_lock_before: i64,
+    ) -> Result<Option<TelegramJobView>, String> {
+        let filter = doc! {
+            "status": { "$in": [TelegramJobStatus::Queued.as_str(), TelegramJobStatus::Delayed.as_str()] },
+            "run_after": { "$lte": now },
+            "$or": [
+                { "locked_at": { "$exists": false } },
+                { "locked_at": Bson::Null },
+                { "locked_at": { "$lt": stale_lock_before } }
+            ]
+        };
+        let update = doc! {
+            "$set": {
+                "status": TelegramJobStatus::Running.as_str(),
+                "locked_at": now,
+                "locked_by": worker_id,
+                "updated_at": now,
+            }
+        };
+        let options = FindOneAndUpdateOptions::builder()
+            .sort(doc! { "priority": -1, "run_after": 1, "created_at": 1 })
+            .return_document(ReturnDocument::After)
+            .build();
+        Ok(self
+            .telegram_jobs
+            .find_one_and_update(filter, update, options)
+            .await
+            .map_err(|err| err.to_string())?
+            .map(Self::telegram_job_view))
+    }
+
+    pub async fn complete_telegram_job(
+        &self,
+        id: &str,
+        result_json: String,
+    ) -> Result<(), String> {
+        let now = crate::nas::crypto::now_ts();
+        self.telegram_jobs
+            .update_one(
+                doc! { "id": id },
+                doc! {
+                    "$set": {
+                        "status": TelegramJobStatus::Completed.as_str(),
+                        "result_json": result_json,
+                        "updated_at": now,
+                    },
+                    "$unset": {
+                        "locked_at": "",
+                        "locked_by": "",
+                        "error_message": "",
+                    }
+                },
+                None,
+            )
+            .await
+            .map_err(|err| err.to_string())?;
+        Ok(())
+    }
+
+    pub async fn fail_telegram_job(
+        &self,
+        id: &str,
+        error_message: String,
+    ) -> Result<(), String> {
+        let now = crate::nas::crypto::now_ts();
+        self.telegram_jobs
+            .update_one(
+                doc! { "id": id },
+                doc! {
+                    "$set": {
+                        "status": TelegramJobStatus::Failed.as_str(),
+                        "error_message": error_message,
+                        "updated_at": now,
+                    },
+                    "$unset": {
+                        "locked_at": "",
+                        "locked_by": "",
+                    }
+                },
+                None,
+            )
+            .await
+            .map_err(|err| err.to_string())?;
+        Ok(())
+    }
+
+    pub async fn delay_telegram_job(
+        &self,
+        id: &str,
+        attempts: i32,
+        run_after: i64,
+        error_message: String,
+    ) -> Result<(), String> {
+        let now = crate::nas::crypto::now_ts();
+        self.telegram_jobs
+            .update_one(
+                doc! { "id": id },
+                doc! {
+                    "$set": {
+                        "status": TelegramJobStatus::Delayed.as_str(),
+                        "attempts": attempts,
+                        "run_after": run_after,
+                        "error_message": error_message,
+                        "updated_at": now,
+                    },
+                    "$unset": {
+                        "locked_at": "",
+                        "locked_by": "",
+                        "result_json": "",
+                    }
+                },
+                None,
+            )
+            .await
+            .map_err(|err| err.to_string())?;
+        Ok(())
+    }
+
+    pub async fn mark_telegram_job_running_attempt(
+        &self,
+        id: &str,
+        attempts: i32,
+    ) -> Result<(), String> {
+        self.telegram_jobs
+            .update_one(
+                doc! { "id": id },
+                doc! {
+                    "$set": {
+                        "attempts": attempts,
+                        "updated_at": crate::nas::crypto::now_ts(),
+                    }
+                },
+                None,
+            )
+            .await
+            .map_err(|err| err.to_string())?;
+        Ok(())
+    }
+
+    pub async fn set_telegram_global_cooldown(
+        &self,
+        until: i64,
+        reason: Option<String>,
+    ) -> Result<(), String> {
+        let options = UpdateOptions::builder().upsert(true).build();
+        self.telegram_queue_state
+            .update_one(
+                doc! { "key": "global_cooldown" },
+                doc! {
+                    "$set": {
+                        "key": "global_cooldown",
+                        "until": until,
+                        "reason": reason,
+                        "updated_at": crate::nas::crypto::now_ts(),
+                    }
+                },
+                options,
+            )
+            .await
+            .map_err(|err| err.to_string())?;
+        Ok(())
+    }
+
+    pub async fn get_telegram_global_cooldown(&self) -> Result<Option<i64>, String> {
+        let now = crate::nas::crypto::now_ts();
+        let record = self
+            .telegram_queue_state
+            .find_one(doc! { "key": "global_cooldown" }, None)
+            .await
+            .map_err(|err| err.to_string())?;
+        Ok(record.and_then(|value| (value.until > now).then_some(value.until)))
     }
 
     pub async fn store_secret(&self, key: String, value: String) -> Result<(), String> {

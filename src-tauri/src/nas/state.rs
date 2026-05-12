@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 use std::time::Instant;
 
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 use crate::commands::TelegramState;
 
@@ -53,6 +53,8 @@ pub struct NasState {
     pub preview_downloads: Arc<Mutex<HashMap<String, PreviewDownloadJob>>>,
     pub upload_gate: Arc<Mutex<()>>,
     pub last_telegram_upload_at: Arc<Mutex<Option<Instant>>>,
+    pub telegram_write_gate: Arc<Mutex<()>>,
+    pub telegram_job_notify: Arc<Notify>,
     pub telegram: Arc<TelegramState>,
 }
 
@@ -93,6 +95,8 @@ impl NasState {
             preview_downloads: Arc::new(Mutex::new(HashMap::new())),
             upload_gate: Arc::new(Mutex::new(())),
             last_telegram_upload_at: Arc::new(Mutex::new(None)),
+            telegram_write_gate: Arc::new(Mutex::new(())),
+            telegram_job_notify: Arc::new(Notify::new()),
             telegram,
         })
     }
