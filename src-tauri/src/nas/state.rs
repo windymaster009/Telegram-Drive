@@ -12,6 +12,12 @@ use super::crypto::{decode_jwt, ensure_master_key, issue_jwt, session_encryption
 use super::db::Database;
 use super::models::{AuthClaims, LoginResponse};
 
+#[derive(Clone, Copy, Debug)]
+pub struct RateLimitDecision {
+    pub allowed: bool,
+    pub retry_after_seconds: i64,
+}
+
 #[derive(Clone)]
 pub struct PreviewDownloadJob {
     pub path: PathBuf,
@@ -42,6 +48,7 @@ pub struct NasState {
     pub session_cookie_name: String,
     pub api_base_url: String,
     pub rate_limits: Arc<Mutex<HashMap<String, Vec<i64>>>>,
+    pub cooldowns: Arc<Mutex<HashMap<String, i64>>>,
     pub desktop_google_logins: Arc<Mutex<HashMap<String, DesktopGoogleLoginResult>>>,
     pub preview_downloads: Arc<Mutex<HashMap<String, PreviewDownloadJob>>>,
     pub upload_gate: Arc<Mutex<()>>,
@@ -81,6 +88,7 @@ impl NasState {
             session_cookie_name: "td_session".to_string(),
             api_base_url,
             rate_limits: Arc::new(Mutex::new(HashMap::new())),
+            cooldowns: Arc::new(Mutex::new(HashMap::new())),
             desktop_google_logins: Arc::new(Mutex::new(HashMap::new())),
             preview_downloads: Arc::new(Mutex::new(HashMap::new())),
             upload_gate: Arc::new(Mutex::new(())),
@@ -98,14 +106,57 @@ impl NasState {
     }
 
     pub async fn allow_rate(&self, key: String, limit: usize, window_seconds: i64) -> bool {
+        self.check_rate_limit(key, limit, window_seconds)
+            .await
+            .allowed
+    }
+
+    pub async fn check_rate_limit(
+        &self,
+        key: String,
+        limit: usize,
+        window_seconds: i64,
+    ) -> RateLimitDecision {
         let now = crate::nas::crypto::now_ts();
         let mut guard = self.rate_limits.lock().await;
         let entries = guard.entry(key).or_default();
         entries.retain(|ts| *ts > now - window_seconds);
         if entries.len() >= limit {
-            return false;
+            let retry_after_seconds = entries
+                .first()
+                .map(|oldest| (oldest + window_seconds - now).max(1))
+                .unwrap_or(window_seconds.max(1));
+            return RateLimitDecision {
+                allowed: false,
+                retry_after_seconds,
+            };
         }
         entries.push(now);
-        true
+        RateLimitDecision {
+            allowed: true,
+            retry_after_seconds: 0,
+        }
+    }
+
+    pub async fn cooldown_remaining(&self, key: &str) -> i64 {
+        let now = crate::nas::crypto::now_ts();
+        let mut guard = self.cooldowns.lock().await;
+        guard.retain(|_, until| *until > now);
+        guard
+            .get(key)
+            .copied()
+            .map(|until| (until - now).max(0))
+            .unwrap_or(0)
+    }
+
+    pub async fn activate_cooldown(&self, key: String, seconds: i64) -> i64 {
+        let now = crate::nas::crypto::now_ts();
+        let until = now + seconds.max(1);
+        let mut guard = self.cooldowns.lock().await;
+        let entry = guard.entry(key).or_insert(until);
+        if *entry < until {
+            *entry = until;
+        }
+        (*entry - now).max(0)
     }
 }
