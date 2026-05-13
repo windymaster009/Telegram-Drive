@@ -153,6 +153,7 @@ pub fn new_telegram_state() -> TelegramState {
         runner_shutdown: Arc::new(std::sync::Mutex::new(None)),
         runner_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         peer_cache: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+        read_gate: Arc::new(tokio::sync::Semaphore::new(4)),
     }
 }
 

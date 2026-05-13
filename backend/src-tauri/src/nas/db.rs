@@ -1,7 +1,9 @@
 use futures::TryStreamExt;
 use mongodb::{
     bson::{doc, Bson, DateTime},
-    options::{ClientOptions, FindOneAndUpdateOptions, IndexOptions, ReturnDocument, UpdateOptions},
+    options::{
+        ClientOptions, FindOneAndUpdateOptions, IndexOptions, ReturnDocument, UpdateOptions,
+    },
     Client, Collection, IndexModel,
 };
 use serde::{Deserialize, Serialize};
@@ -228,8 +230,18 @@ impl Database {
         self.ensure_unique_index(&self.folders, "telegramFolderId")
             .await?;
         self.ensure_unique_index(&self.telegram_jobs, "id").await?;
-        self.ensure_index(&self.telegram_jobs, doc! { "status": 1, "run_after": 1, "priority": -1, "created_at": 1 }, "telegram_jobs_scheduler").await?;
-        self.ensure_index(&self.telegram_jobs, doc! { "locked_at": 1, "locked_by": 1 }, "telegram_jobs_locks").await?;
+        self.ensure_index(
+            &self.telegram_jobs,
+            doc! { "status": 1, "run_after": 1, "priority": -1, "created_at": 1 },
+            "telegram_jobs_scheduler",
+        )
+        .await?;
+        self.ensure_index(
+            &self.telegram_jobs,
+            doc! { "locked_at": 1, "locked_by": 1 },
+            "telegram_jobs_locks",
+        )
+        .await?;
         self.ensure_unique_index(&self.telegram_queue_state, "key")
             .await?;
         self.ensure_unique_index(&self.qr_tokens, "token_hash")
@@ -1056,11 +1068,62 @@ impl Database {
             .map(Self::telegram_job_view))
     }
 
-    pub async fn complete_telegram_job(
+    pub async fn recover_stale_telegram_jobs(
         &self,
-        id: &str,
-        result_json: String,
-    ) -> Result<(), String> {
+        stale_lock_before: i64,
+    ) -> Result<(u64, u64), String> {
+        let now = crate::nas::crypto::now_ts();
+        let failed_running = self
+            .telegram_jobs
+            .update_many(
+                doc! {
+                    "status": TelegramJobStatus::Running.as_str(),
+                    "locked_at": { "$lt": stale_lock_before },
+                },
+                doc! {
+                    "$set": {
+                        "status": TelegramJobStatus::Failed.as_str(),
+                        "error_message": "Recovered stale running Telegram job after worker lock timeout. Please retry the action if needed.",
+                        "updated_at": now,
+                    },
+                    "$unset": {
+                        "locked_at": "",
+                        "locked_by": "",
+                    }
+                },
+                None,
+            )
+            .await
+            .map_err(|err| err.to_string())?
+            .modified_count;
+
+        let unlocked_waiting = self
+            .telegram_jobs
+            .update_many(
+                doc! {
+                    "status": { "$in": [TelegramJobStatus::Queued.as_str(), TelegramJobStatus::Delayed.as_str()] },
+                    "locked_at": { "$lt": stale_lock_before },
+                },
+                doc! {
+                    "$unset": {
+                        "locked_at": "",
+                        "locked_by": "",
+                    },
+                    "$set": {
+                        "status": TelegramJobStatus::Queued.as_str(),
+                        "updated_at": now,
+                    }
+                },
+                None,
+            )
+            .await
+            .map_err(|err| err.to_string())?
+            .modified_count;
+
+        Ok((failed_running, unlocked_waiting))
+    }
+
+    pub async fn complete_telegram_job(&self, id: &str, result_json: String) -> Result<(), String> {
         let now = crate::nas::crypto::now_ts();
         self.telegram_jobs
             .update_one(
@@ -1084,11 +1147,7 @@ impl Database {
         Ok(())
     }
 
-    pub async fn fail_telegram_job(
-        &self,
-        id: &str,
-        error_message: String,
-    ) -> Result<(), String> {
+    pub async fn fail_telegram_job(&self, id: &str, error_message: String) -> Result<(), String> {
         let now = crate::nas::crypto::now_ts();
         self.telegram_jobs
             .update_one(

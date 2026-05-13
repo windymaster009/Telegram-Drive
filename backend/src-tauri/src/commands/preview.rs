@@ -1,5 +1,5 @@
 use crate::bandwidth::BandwidthManager;
-use crate::commands::utils::resolve_peer_ref;
+use crate::commands::utils::{map_error, resolve_peer_ref};
 use crate::nas::state::{NasState, PreviewDownloadJob};
 use crate::TelegramState;
 use base64::{engine::general_purpose, Engine as _};
@@ -160,12 +160,19 @@ pub async fn cmd_start_local_preview(
         .await
         .clone()
         .ok_or_else(|| "Telegram client is not connected".to_string())?;
+    let read_gate = state.read_gate.clone();
+    let _read_permit = read_gate
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| "Telegram read limiter is unavailable".to_string())?;
 
     let peer = resolve_peer_ref(&client, folder_id, &state.peer_cache).await?;
     let messages = client
         .get_messages_by_id(peer, &[message_id])
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(map_error)?;
+    drop(_read_permit);
     let msg = messages
         .into_iter()
         .flatten()
@@ -239,8 +246,13 @@ pub async fn cmd_start_local_preview(
         let tail_cancelled = cancelled.clone();
         let tail_error = error.clone();
         let tail_downloaded = tail_downloaded.clone();
+        let tail_read_gate = read_gate.clone();
         tauri::async_runtime::spawn(async move {
             let result = async {
+                let _read_permit = tail_read_gate
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| "Telegram read limiter is unavailable".to_string())?;
                 let mut file =
                     std::fs::File::create(&tail_path_for_task).map_err(|e| e.to_string())?;
                 let chunk_size = LOCAL_PREVIEW_CHUNK_SIZE as u64;
@@ -285,8 +297,13 @@ pub async fn cmd_start_local_preview(
     }
 
     let download_path = save_path.clone();
+    let download_read_gate = read_gate.clone();
     tauri::async_runtime::spawn(async move {
         let result = async {
+            let _read_permit = download_read_gate
+                .acquire_owned()
+                .await
+                .map_err(|_| "Telegram read limiter is unavailable".to_string())?;
             let mut file = std::fs::File::create(&download_path).map_err(|e| e.to_string())?;
             let mut download_iter = client
                 .iter_download(&media)
@@ -400,12 +417,18 @@ pub async fn cmd_get_preview(
         return Ok("".to_string());
     }
     let client = client_opt.unwrap();
+    let _read_permit = state
+        .read_gate
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| "Telegram read limiter is unavailable".to_string())?;
 
     let peer = resolve_peer_ref(&client, folder_id, &state.peer_cache).await?;
     let messages = client
         .get_messages_by_id(peer, &[message_id])
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(map_error)?;
     let target_message = messages.into_iter().flatten().next();
 
     if let Some(msg) = target_message {
@@ -566,12 +589,18 @@ pub async fn cmd_get_thumbnail(
         return Ok("".to_string());
     }
     let client = client_opt.unwrap();
+    let _read_permit = state
+        .read_gate
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| "Telegram read limiter is unavailable".to_string())?;
 
     let peer = resolve_peer_ref(&client, folder_id, &state.peer_cache).await?;
     let messages = client
         .get_messages_by_id(peer, &[message_id])
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(map_error)?;
     if let Some(m) = messages.into_iter().flatten().next() {
         if let Some(media) = m.media() {
             // Only get thumbnails for photos and documents with photo thumbnails

@@ -8,8 +8,8 @@ use tokio::time::{sleep, timeout, Duration};
 use uuid::Uuid;
 
 use crate::commands::fs::{
-    copy_files_inner, create_folder_inner, delete_file_inner, delete_folder_inner, move_files_inner,
-    rename_folder_inner, upload_file_inner, FolderActor,
+    copy_files_inner, create_folder_inner, delete_file_inner, delete_folder_inner,
+    move_files_inner, rename_folder_inner, upload_file_inner, FolderActor,
 };
 use crate::nas::crypto::now_ts;
 use crate::nas::models::{TelegramJobStatus, TelegramJobType, TelegramJobView};
@@ -23,7 +23,7 @@ const DEFAULT_TELEGRAM_MAX_ATTEMPTS: i32 = 3;
 const DEFAULT_TELEGRAM_JOB_TIMEOUT_MS: u64 = 120_000;
 const TELEGRAM_FLOOD_WAIT_BUFFER_SECONDS: i64 = 30;
 const TELEGRAM_SPAM_LOCKOUT_SECONDS: i64 = 30 * 60;
-const TELEGRAM_JOB_STALE_LOCK_SECONDS: i64 = 6 * 60 * 60;
+const DEFAULT_TELEGRAM_JOB_STALE_LOCK_MINUTES: i64 = 15;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -148,13 +148,11 @@ pub async fn wait_for_telegram_job<T: DeserializeOwned>(
 
         match job.status {
             TelegramJobStatus::Completed => {
-                let result_json = job
-                    .result_json
-                    .ok_or_else(|| {
-                        TelegramJobWaitError::InvalidResult(
-                            "Completed job is missing result payload".to_string(),
-                        )
-                    })?;
+                let result_json = job.result_json.ok_or_else(|| {
+                    TelegramJobWaitError::InvalidResult(
+                        "Completed job is missing result payload".to_string(),
+                    )
+                })?;
                 return serde_json::from_str(&result_json)
                     .map_err(|err| TelegramJobWaitError::InvalidResult(err.to_string()));
             }
@@ -191,6 +189,19 @@ async fn worker_iteration(
     worker_id: &str,
     execution_state: &mut WorkerExecutionState,
 ) -> Result<Duration, String> {
+    let stale_lock_before = now_ts() - telegram_stale_lock_seconds();
+    let (failed_running, unlocked_waiting) = state
+        .db
+        .recover_stale_telegram_jobs(stale_lock_before)
+        .await?;
+    if failed_running > 0 || unlocked_waiting > 0 {
+        log::warn!(
+            "Recovered stale Telegram queue locks: failed_running={}, unlocked_waiting={}",
+            failed_running,
+            unlocked_waiting
+        );
+    }
+
     if let Some(until) = state.db.get_telegram_global_cooldown().await? {
         let wait_seconds = (until - now_ts()).max(1) as u64;
         log::warn!(
@@ -203,11 +214,7 @@ async fn worker_iteration(
     let now = now_ts();
     let Some(job) = state
         .db
-        .claim_next_telegram_job(
-            worker_id,
-            now,
-            now - TELEGRAM_JOB_STALE_LOCK_SECONDS,
-        )
+        .claim_next_telegram_job(worker_id, now, stale_lock_before)
         .await?
     else {
         return Ok(Duration::from_secs(1));
@@ -232,7 +239,11 @@ async fn worker_iteration(
             mark_success_timing(&job.job_type, execution_state);
             state.db.complete_telegram_job(&job.id, result_json).await?;
             maybe_cleanup_job_artifacts(&payload).await;
-            log::info!("Telegram job completed: {} {}", job.id, job.job_type.as_str());
+            log::info!(
+                "Telegram job completed: {} {}",
+                job.id,
+                job.job_type.as_str()
+            );
         }
         Err(error_message) => {
             if let Some(wait_seconds) = telegram_penalty_seconds(&error_message) {
@@ -251,7 +262,10 @@ async fn worker_iteration(
                     wait_seconds
                 );
             } else if next_attempt >= job.max_attempts {
-                state.db.fail_telegram_job(&job.id, error_message.clone()).await?;
+                state
+                    .db
+                    .fail_telegram_job(&job.id, error_message.clone())
+                    .await?;
                 maybe_cleanup_job_artifacts(&payload).await;
                 log::error!(
                     "Telegram job failed permanently after {} attempts: {} {}",
@@ -417,7 +431,10 @@ async fn execute_job(
     }
 }
 
-async fn apply_operation_delay(job_type: &TelegramJobType, execution_state: &mut WorkerExecutionState) {
+async fn apply_operation_delay(
+    job_type: &TelegramJobType,
+    execution_state: &mut WorkerExecutionState,
+) {
     match job_type {
         TelegramJobType::CreateFolder => {
             if let Some(last_create) = execution_state.last_create_folder_at {
@@ -446,10 +463,7 @@ async fn apply_operation_delay(job_type: &TelegramJobType, execution_state: &mut
             if let Some(last_upload) = execution_state.last_upload_at {
                 let delay = StdDuration::from_millis(telegram_upload_delay_ms());
                 if let Some(wait_for) = delay.checked_sub(last_upload.elapsed()) {
-                    log::info!(
-                        "Telegram upload spacing delay: {} ms",
-                        wait_for.as_millis()
-                    );
+                    log::info!("Telegram upload spacing delay: {} ms", wait_for.as_millis());
                     sleep(wait_for).await;
                 }
             }
@@ -532,6 +546,13 @@ fn env_i32(key: &str, default_value: i32) -> i32 {
         .unwrap_or(default_value)
 }
 
+fn env_i64(key: &str, default_value: i64) -> i64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .unwrap_or(default_value)
+}
+
 fn telegram_upload_delay_ms() -> u64 {
     env_u64("TELEGRAM_UPLOAD_DELAY_MS", DEFAULT_TELEGRAM_UPLOAD_DELAY_MS)
 }
@@ -556,4 +577,13 @@ fn telegram_batch_pause_ms() -> u64 {
 
 fn telegram_max_attempts() -> i32 {
     env_i32("TELEGRAM_MAX_ATTEMPTS", DEFAULT_TELEGRAM_MAX_ATTEMPTS).max(1)
+}
+
+fn telegram_stale_lock_seconds() -> i64 {
+    env_i64(
+        "TELEGRAM_JOB_STALE_LOCK_MINUTES",
+        DEFAULT_TELEGRAM_JOB_STALE_LOCK_MINUTES,
+    )
+    .max(1)
+        * 60
 }

@@ -8,6 +8,15 @@ use std::sync::Arc;
 use tauri::State;
 use tokio::sync::RwLock;
 
+#[derive(Debug, Clone)]
+pub struct ResolvedTelegramReadPeer {
+    pub peer: Peer,
+    pub peer_ref: PeerRef,
+    pub peer_kind: &'static str,
+    pub peer_id: Option<i64>,
+    pub is_saved_messages: bool,
+}
+
 /// Resolve a folder_id to a Telegram Peer, using the cache for O(1) lookups.
 ///
 /// - `folder_id == None` → returns the user's own peer (Saved Messages)
@@ -75,6 +84,42 @@ pub async fn resolve_peer_ref(
     resolve_peer(client, folder_id, peer_cache)
         .await
         .map(PeerRef::from)
+}
+
+pub async fn resolve_read_peer(
+    client: &Client,
+    folder_id: Option<i64>,
+    peer_cache: &Arc<RwLock<HashMap<i64, Peer>>>,
+) -> Result<ResolvedTelegramReadPeer, String> {
+    if folder_id.is_none() {
+        let peer = resolve_peer(client, None, peer_cache).await?;
+        let peer_id = match &peer {
+            Peer::User(user) => Some(user.raw.id()),
+            _ => None,
+        };
+        return Ok(ResolvedTelegramReadPeer {
+            peer,
+            peer_ref: tl::enums::InputPeer::PeerSelf.into(),
+            peer_kind: "saved_messages",
+            peer_id,
+            is_saved_messages: true,
+        });
+    }
+
+    let peer = resolve_peer(client, folder_id, peer_cache).await?;
+    let (peer_kind, peer_id) = match &peer {
+        Peer::Channel(channel) => ("channel", Some(channel.raw.id)),
+        Peer::User(user) => ("user", Some(user.raw.id())),
+        _ => ("unknown", None),
+    };
+
+    Ok(ResolvedTelegramReadPeer {
+        peer_ref: PeerRef::from(peer.clone()),
+        peer,
+        peer_kind,
+        peer_id,
+        is_saved_messages: folder_id.is_none(),
+    })
 }
 
 /// Clear the peer cache (called on logout)
