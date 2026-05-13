@@ -35,6 +35,7 @@ export function AudioPlayer() {
 
     const hasQueueControls = queue.length > 1;
     const progress = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0;
+    const seekValue = Math.min(currentTime, duration || currentTime);
 
     useEffect(() => {
         const audio = audioRef.current;
@@ -65,7 +66,7 @@ export function AudioPlayer() {
     }, [currentTrack, isPlaying, playNonce, setPlaybackState]);
 
     useEffect(() => {
-        if (!currentTrack || !('mediaSession' in navigator)) return;
+        if (!currentTrack || !('mediaSession' in navigator) || typeof MediaMetadata === 'undefined') return;
 
         navigator.mediaSession.metadata = new MediaMetadata({
             title: currentTrack.name,
@@ -84,8 +85,26 @@ export function AudioPlayer() {
 
         setHandler('play', () => play());
         setHandler('pause', () => pause());
+        setHandler('stop', () => stop());
         setHandler('previoustrack', hasQueueControls ? () => previous() : null);
         setHandler('nexttrack', hasQueueControls ? () => next() : null);
+        setHandler('seekbackward', details => {
+            const audio = audioRef.current;
+            if (!audio) return;
+            const step = typeof details.seekOffset === 'number' ? details.seekOffset : 10;
+            const nextTime = Math.max(0, audio.currentTime - step);
+            audio.currentTime = nextTime;
+            setPlaybackState({ currentTime: nextTime });
+        });
+        setHandler('seekforward', details => {
+            const audio = audioRef.current;
+            if (!audio) return;
+            const step = typeof details.seekOffset === 'number' ? details.seekOffset : 10;
+            const maxTime = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : Number.MAX_SAFE_INTEGER;
+            const nextTime = Math.min(maxTime, audio.currentTime + step);
+            audio.currentTime = nextTime;
+            setPlaybackState({ currentTime: nextTime });
+        });
         setHandler('seekto', details => {
             const audio = audioRef.current;
             if (!audio || typeof details.seekTime !== 'number') return;
@@ -96,11 +115,14 @@ export function AudioPlayer() {
         return () => {
             setHandler('play', null);
             setHandler('pause', null);
+            setHandler('stop', null);
             setHandler('previoustrack', null);
             setHandler('nexttrack', null);
+            setHandler('seekbackward', null);
+            setHandler('seekforward', null);
             setHandler('seekto', null);
         };
-    }, [currentTrack, hasQueueControls, isPlaying, next, pause, play, previous, setPlaybackState]);
+    }, [currentTrack, hasQueueControls, isPlaying, next, pause, play, previous, setPlaybackState, stop]);
 
     useEffect(() => {
         if (!currentTrack || !('mediaSession' in navigator) || !navigator.mediaSession.setPositionState) return;
@@ -199,7 +221,7 @@ export function AudioPlayer() {
                                 min={0}
                                 max={duration || 0}
                                 step={0.1}
-                                value={Math.min(currentTime, duration || currentTime)}
+                                value={seekValue}
                                 onChange={event => seekTo(Number(event.target.value))}
                                 className="w-full accent-telegram-primary"
                                 aria-label="Seek audio"
@@ -240,15 +262,31 @@ export function AudioPlayer() {
                                 min={0}
                                 max={duration || 0}
                                 step={0.1}
-                                value={Math.min(currentTime, duration || currentTime)}
+                                value={seekValue}
                                 onChange={event => seekTo(Number(event.target.value))}
                                 className="min-w-0 flex-1 accent-telegram-primary"
                                 aria-label="Seek audio"
                             />
                             <span className="w-10 text-right text-xs text-telegram-subtext">{formatTime(duration)}</span>
                         </div>
-                        <div className="mt-1 h-1 overflow-hidden rounded-full bg-white/10 md:hidden">
-                            <div className="h-full rounded-full bg-telegram-primary" style={{ width: `${progress}%` }} />
+                        <div className="mt-2 md:hidden">
+                            <input
+                                type="range"
+                                min={0}
+                                max={duration || 0}
+                                step={0.1}
+                                value={seekValue}
+                                onChange={event => seekTo(Number(event.target.value))}
+                                className="w-full accent-telegram-primary"
+                                aria-label="Seek audio"
+                            />
+                            <div className="mt-1 flex justify-between text-[11px] text-telegram-subtext">
+                                <span>{formatTime(currentTime)}</span>
+                                <span>{formatTime(duration)}</span>
+                            </div>
+                            <div className="mt-2 h-1 overflow-hidden rounded-full bg-white/10">
+                                <div className="h-full rounded-full bg-telegram-primary" style={{ width: `${progress}%` }} />
+                            </div>
                         </div>
                     </div>
                     <div className="hidden md:flex">{controls}</div>

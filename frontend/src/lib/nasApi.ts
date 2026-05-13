@@ -117,7 +117,7 @@ export const nasApi = {
     const params = new URLSearchParams();
     if (folderId !== null) params.set("folder_id", String(folderId));
     const suffix = params.toString() ? `?${params.toString()}` : "";
-    return request<TelegramFile[]>(`/api/telegram/files${suffix}`);
+    return requestWithTimeout<TelegramFile[]>(`/api/telegram/files${suffix}`, {}, undefined, 50000);
   },
   scanTelegramFolders: () => request<TelegramFolder[]>("/api/telegram/folders/scan"),
   createTelegramFolder: (name: string) =>

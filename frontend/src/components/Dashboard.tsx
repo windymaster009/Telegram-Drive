@@ -208,6 +208,7 @@ export function Dashboard({ onLogout, permissions, allowFolderManagement = true,
             type: f.type || (f.name.endsWith('/') ? 'folder' : 'file')
         }))),
         enabled: !!store && hasFolderAccess && activeFolderAllowed && !activeFolderNeedsUnlock,
+        retry: false,
     });
 
     const displayedFiles = searchTerm.length > 2
