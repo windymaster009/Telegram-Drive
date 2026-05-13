@@ -12,7 +12,7 @@ import type {
 import type { TelegramFile, TelegramFolder } from "@shared/telegram";
 
 export const getApiBaseUrl = () => {
-  const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL;
+  const configuredBaseUrl = import.meta.env.VITE_BACKEND_URL || import.meta.env.VITE_API_BASE_URL;
   if (configuredBaseUrl) return configuredBaseUrl.replace(/\/$/, "");
 
   const currentHost = window.location.hostname;

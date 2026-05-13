@@ -16,6 +16,11 @@
     "build": "npm run build:frontend && npm run build:backend",
     "build:frontend": "npm --prefix frontend run build",
     "build:backend": "npm --prefix backend run build",
+    "build:desktop": "node scripts/export-artifacts.mjs build:desktop",
+    "build:android": "node scripts/export-artifacts.mjs build:android",
+    "export:desktop": "node scripts/export-artifacts.mjs export:desktop",
+    "export:android": "node scripts/export-artifacts.mjs export:android",
+    "export:all": "node scripts/export-artifacts.mjs export:all",
     "tauri": "npm --prefix backend run tauri --",
     "tauri:dev": "npm --prefix backend run tauri -- dev",
     "tauri:build": "npm --prefix backend run tauri -- build"

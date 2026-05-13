@@ -332,6 +332,18 @@ Install Visual Studio Build Tools with the Desktop development with C++ workload
 
 Install Microsoft Edge WebView2 Runtime.
 
+### Android APK Says Package Is Missing or Invalid
+
+If the Android export gives you a file named like `app-universal-release-unsigned.apk`, that APK is not signed and Android will reject it during install.
+
+For local testing, use the debug APK if present:
+
+```text
+backend/src-tauri/gen/android/app/build/outputs/apk/arm64/debug/app-arm64-debug.apk
+```
+
+For a shareable release APK, configure Android signing and build a signed release APK. The export script now refuses to copy an unsigned release APK as if it were install-ready.
+
 ### Preview or Stream Still Uses Old Behavior
 
 Close every running Telegram Drive window. If an old process still owns port `14201`, it may serve old backend code. Restart the newly built app.
