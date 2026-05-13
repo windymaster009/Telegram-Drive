@@ -1,5 +1,5 @@
 use crate::bandwidth::BandwidthManager;
-use crate::commands::utils::{map_error, resolve_peer, resolve_peer_ref};
+use crate::commands::utils::{map_error, resolve_peer, resolve_peer_ref, resolve_read_peer};
 use crate::models::{FileMetadata, FolderMetadata};
 use crate::nas::crypto::hash_password;
 use crate::nas::models::{AccessLevel, AppRole, AppUser, ApprovalStatus, FolderRecordView};
@@ -689,7 +689,8 @@ pub async fn upload_file_inner(
     bw_state: Option<&BandwidthManager>,
     actor: Option<FolderActor>,
 ) -> Result<String, String> {
-    let user = user_from_access_token_or_desktop_admin(nas_state, access_token.clone(), actor).await;
+    let user =
+        user_from_access_token_or_desktop_admin(nas_state, access_token.clone(), actor).await;
     ensure_can_manage_optional_folder(nas_state, &user, folder_id).await?;
     let size = std::fs::metadata(&path).map_err(|e| e.to_string())?.len();
     if let Some(bw_state) = bw_state {
@@ -999,8 +1000,14 @@ pub async fn cmd_download_file(
         return Ok("Download successful".to_string());
     }
     let client = client_opt.unwrap();
-
-    let peer = resolve_peer_ref(&client, folder_id, &state.peer_cache).await?;
+    let _read_permit = state
+        .read_gate
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| "Telegram read limiter is unavailable".to_string())?;
+    let resolved_peer = resolve_read_peer(&client, folder_id, &state.peer_cache).await?;
+    let peer = resolved_peer.peer_ref;
 
     if message_id == TEXT_MESSAGES_FILE_ID {
         let mut text_messages = Vec::new();
@@ -1041,11 +1048,10 @@ pub async fn cmd_download_file(
     }
 
     // Use get_messages_by_id for efficient message lookup (same as server.rs)
-    let peer = resolve_peer_ref(&client, folder_id, &state.peer_cache).await?;
     let messages = client
         .get_messages_by_id(peer, &[message_id])
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(map_error)?;
 
     let msg = messages
         .into_iter()
@@ -1280,19 +1286,38 @@ pub async fn get_files_inner(
     folder_id: Option<i64>,
     state: &TelegramState,
 ) -> Result<Vec<FileMetadata>, String> {
+    let is_saved_messages = folder_id.is_none();
+    log::info!(
+        "[list-files] Starting Telegram file listing for folder_id={:?} saved_messages={}",
+        folder_id,
+        is_saved_messages
+    );
     let client_opt = { state.client.lock().await.clone() };
     if client_opt.is_none() {
         log::info!("[MOCK] Returning mock files for folder {:?}", folder_id);
         return Ok(Vec::new()); // No mock files for now
     }
     let client = client_opt.unwrap();
+    let _read_permit = state
+        .read_gate
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| "Telegram read limiter is unavailable".to_string())?;
     let mut files = Vec::new();
-
-    let peer = resolve_peer_ref(&client, folder_id, &state.peer_cache).await?;
+    let resolved_peer = resolve_read_peer(&client, folder_id, &state.peer_cache).await?;
+    log::info!(
+        "[list-files] Resolved Telegram peer: requested_folder_id={:?} saved_messages={} peer_kind={} peer_id={:?} api_call=iter_messages",
+        folder_id,
+        resolved_peer.is_saved_messages,
+        resolved_peer.peer_kind,
+        resolved_peer.peer_id
+    );
+    let peer = resolved_peer.peer_ref;
 
     let mut msgs = client.iter_messages(peer);
     let mut text_messages = Vec::new();
-    while let Some(msg) = msgs.next().await.map_err(|e| e.to_string())? {
+    while let Some(msg) = msgs.next().await.map_err(map_error)? {
         if let Some(doc) = msg.media() {
             let (name, size, mime, ext) = match doc {
                 Media::Document(d) => {
@@ -1355,6 +1380,13 @@ pub async fn get_files_inner(
         });
     }
 
+    log::info!(
+        "[list-files] Completed Telegram file listing for folder_id={:?} saved_messages={} files={} grouped_text_messages={}",
+        folder_id,
+        is_saved_messages,
+        files.len(),
+        !text_messages.is_empty()
+    );
     Ok(files)
 }
 
@@ -1370,6 +1402,12 @@ pub async fn search_global_inner(
     query: String,
     state: &TelegramState,
 ) -> Result<Vec<FileMetadata>, String> {
+    let _read_permit = state
+        .read_gate
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| "Telegram read limiter is unavailable".to_string())?;
     let client_opt = { state.client.lock().await.clone() };
     if client_opt.is_none() {
         return Ok(Vec::new());

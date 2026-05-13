@@ -1,4 +1,4 @@
-use crate::commands::utils::resolve_peer;
+use crate::commands::utils::resolve_read_peer;
 use crate::nas::crypto::now_ts;
 use crate::nas::models::ApprovalStatus;
 use crate::nas::{api::configure_api, state::NasState};
@@ -174,13 +174,21 @@ async fn stream_media_impl(
     };
 
     if let Some(client) = client_opt {
+        let read_permit = match data.telegram.read_gate.clone().acquire_owned().await {
+            Ok(permit) => permit,
+            Err(_) => {
+                log::error!("Stream request failed: Telegram read limiter is unavailable");
+                return HttpResponse::ServiceUnavailable()
+                    .body("Telegram read limiter is unavailable");
+            }
+        };
         log::debug!(
             "Stream request: Client acquired, resolving peer for msg {}...",
             message_id
         );
         match timeout(
             PEER_RESOLVE_TIMEOUT,
-            resolve_peer(&client, folder_id, &data.telegram.peer_cache),
+            resolve_read_peer(&client, folder_id, &data.telegram.peer_cache),
         )
         .await
         {
@@ -191,15 +199,18 @@ async fn stream_media_impl(
                 );
                 HttpResponse::GatewayTimeout().body("Peer resolution timed out")
             }
-            Ok(Ok(peer)) => {
+            Ok(Ok(resolved_peer)) => {
                 log::debug!(
-                    "Stream request: Peer resolved, fetching message {}...",
-                    message_id
+                    "Stream request: Peer resolved for msg {} (saved_messages={}, peer_kind={}, peer_id={:?}), fetching message...",
+                    message_id,
+                    resolved_peer.is_saved_messages,
+                    resolved_peer.peer_kind,
+                    resolved_peer.peer_id
                 );
                 // Try to fetch message efficiently
                 match timeout(
                     MESSAGE_FETCH_TIMEOUT,
-                    client.get_messages_by_id(peer, &[message_id]),
+                    client.get_messages_by_id(resolved_peer.peer_ref, &[message_id]),
                 )
                 .await
                 {
@@ -229,7 +240,9 @@ async fn stream_media_impl(
                                 if size == 0 {
                                     let mut download_iter =
                                         client.iter_download(&media).chunk_size(STREAM_CHUNK_SIZE);
+                                    let read_permit = read_permit;
                                     let stream = async_stream::stream! {
+                                        let _read_permit = read_permit;
                                         loop {
                                             match timeout(Duration::from_secs(30), download_iter.next()).await {
                                                 Ok(Ok(Some(bytes))) => {
@@ -284,7 +297,9 @@ async fn stream_media_impl(
                                     .iter_download(&media)
                                     .chunk_size(STREAM_CHUNK_SIZE)
                                     .skip_chunks(skip_chunks);
+                                let read_permit = read_permit;
                                 let stream = async_stream::stream! {
+                                    let _read_permit = read_permit;
                                     let mut chunk_count = 0;
                                     let mut first_chunk = true;
                                     loop {

@@ -237,14 +237,18 @@ struct SearchQuery {
     query: String,
 }
 
-async fn folder_actor_for_user(state: &NasState, user_id: &str) -> Result<FolderActor, HttpResponse> {
+async fn folder_actor_for_user(
+    state: &NasState,
+    user_id: &str,
+) -> Result<FolderActor, HttpResponse> {
     let user = state
         .db
         .get_user_by_id(user_id.to_string())
         .await
         .map_err(|err| HttpResponse::InternalServerError().json(json!({ "error": err })))?
         .ok_or_else(|| {
-            HttpResponse::Unauthorized().json(json!({ "error": "User account is no longer available" }))
+            HttpResponse::Unauthorized()
+                .json(json!({ "error": "User account is no longer available" }))
         })?;
     Ok(FolderActor {
         user_id: user.id,
@@ -275,20 +279,16 @@ async fn enqueue_and_wait_telegram_write(
         Err(TelegramJobWaitError::Failed(err)) => {
             Err(HttpResponse::BadRequest().json(json!({ "error": err, "job_id": job.id })))
         }
-        Err(TelegramJobWaitError::TimedOut(job)) => Err(
-            HttpResponse::Accepted().json(json!({
-                "job_id": job.id,
-                "status": job.status,
-                "retry_after_seconds": (job.run_after - now_ts()).max(0),
-            })),
-        ),
-        Err(TelegramJobWaitError::Missing) => Err(
-            HttpResponse::InternalServerError()
-                .json(json!({ "error": "Queued Telegram job disappeared unexpectedly" })),
-        ),
-        Err(TelegramJobWaitError::InvalidResult(err)) => Err(
-            HttpResponse::InternalServerError().json(json!({ "error": err, "job_id": job.id })),
-        ),
+        Err(TelegramJobWaitError::TimedOut(job)) => Err(HttpResponse::Accepted().json(json!({
+            "job_id": job.id,
+            "status": job.status,
+            "retry_after_seconds": (job.run_after - now_ts()).max(0),
+        }))),
+        Err(TelegramJobWaitError::Missing) => Err(HttpResponse::InternalServerError()
+            .json(json!({ "error": "Queued Telegram job disappeared unexpectedly" }))),
+        Err(TelegramJobWaitError::InvalidResult(err)) => {
+            Err(HttpResponse::InternalServerError().json(json!({ "error": err, "job_id": job.id })))
+        }
     }
 }
 
@@ -733,7 +733,7 @@ async fn login(
         Ok(Some(record)) => record,
         Ok(None) => {
             mark_login_failure(&state, &req, &payload.username).await;
-            return HttpResponse::Unauthorized().json(json!({ "error": "Invalid credentials" }))
+            return HttpResponse::Unauthorized().json(json!({ "error": "Invalid credentials" }));
         }
         Err(err) => return HttpResponse::InternalServerError().json(json!({ "error": err })),
     };
@@ -1354,17 +1354,49 @@ async fn list_telegram_files(
     req: HttpRequest,
     query: web::Query<FilesQuery>,
 ) -> impl Responder {
-    if let Err(resp) = authorize(&state, &req, false).await {
-        return resp;
+    let ctx = match authorize(&state, &req, false).await {
+        Ok(ctx) => ctx,
+        Err(resp) => return resp,
+    };
+
+    let is_saved_messages = query.folder_id.is_none();
+    match state.db.get_telegram_global_cooldown().await {
+        Ok(Some(until)) => log::info!(
+            "[list-files] Telegram write cooldown active until {}, but read request will proceed independently",
+            until
+        ),
+        Ok(None) => {}
+        Err(err) => log::warn!("[list-files] Could not inspect Telegram write cooldown: {}", err),
     }
+    log::info!(
+        "[list-files] HTTP request user_id={} session_id={} folder_id={:?} saved_messages={}",
+        ctx.user_id,
+        ctx.session_id,
+        query.folder_id,
+        is_saved_messages
+    );
 
     if let Err(err) = ensure_owner_client_connected(&state).await {
+        log::error!(
+            "[list-files] Owner Telegram client connection failed for folder_id={:?} saved_messages={}: {}",
+            query.folder_id,
+            is_saved_messages,
+            err
+        );
         return HttpResponse::InternalServerError().json(json!({ "error": err }));
     }
 
     match get_files_inner(query.folder_id, state.telegram.as_ref()).await {
         Ok(files) => HttpResponse::Ok().json(files),
-        Err(err) => HttpResponse::BadRequest().json(json!({ "error": err })),
+        Err(err) => {
+            log::error!(
+                "[list-files] Telegram file listing failed for folder_id={:?} saved_messages={}: {}",
+                query.folder_id,
+                is_saved_messages,
+                err
+            );
+            HttpResponse::BadRequest().json(json!({ "error": err }))
+        }
     }
 }
 
@@ -1434,7 +1466,14 @@ async fn create_telegram_folder(
         name: payload.name.clone(),
         actor,
     };
-    match enqueue_and_wait_telegram_write(&state, &ctx.user_id, TelegramJobType::CreateFolder, &payload).await {
+    match enqueue_and_wait_telegram_write(
+        &state,
+        &ctx.user_id,
+        TelegramJobType::CreateFolder,
+        &payload,
+    )
+    .await
+    {
         Ok(value) => HttpResponse::Ok().json(value),
         Err(resp) => resp,
     }
@@ -1458,7 +1497,14 @@ async fn delete_telegram_folder(
         folder_id: path.into_inner(),
         actor,
     };
-    match enqueue_and_wait_telegram_write(&state, &ctx.user_id, TelegramJobType::DeleteFolder, &payload).await {
+    match enqueue_and_wait_telegram_write(
+        &state,
+        &ctx.user_id,
+        TelegramJobType::DeleteFolder,
+        &payload,
+    )
+    .await
+    {
         Ok(value) => HttpResponse::Ok().json(value),
         Err(resp) => resp,
     }
@@ -1484,7 +1530,14 @@ async fn rename_telegram_folder(
         name: payload.name.clone(),
         actor,
     };
-    match enqueue_and_wait_telegram_write(&state, &ctx.user_id, TelegramJobType::RenameFolder, &payload).await {
+    match enqueue_and_wait_telegram_write(
+        &state,
+        &ctx.user_id,
+        TelegramJobType::RenameFolder,
+        &payload,
+    )
+    .await
+    {
         Ok(value) => HttpResponse::Ok().json(value),
         Err(resp) => resp,
     }
@@ -1526,7 +1579,8 @@ async fn set_telegram_folder_password(
         Ok(ctx) => ctx,
         Err(resp) => return resp,
     };
-    if let Err(resp) = guard_telegram_write(&state, &req, &ctx.user_id, "set-folder-password").await {
+    if let Err(resp) = guard_telegram_write(&state, &req, &ctx.user_id, "set-folder-password").await
+    {
         return resp;
     }
     let token = session_token_from_request(&state, &req);
@@ -1683,7 +1737,14 @@ async fn upload_telegram_file(
         folder_id: query.folder_id,
         actor,
     };
-    match enqueue_and_wait_telegram_write(&state, &ctx.user_id, TelegramJobType::UploadFile, &job_payload).await {
+    match enqueue_and_wait_telegram_write(
+        &state,
+        &ctx.user_id,
+        TelegramJobType::UploadFile,
+        &job_payload,
+    )
+    .await
+    {
         Ok(value) => HttpResponse::Ok().json(value),
         Err(resp) => resp,
     }
@@ -1709,7 +1770,14 @@ async fn delete_telegram_file(
         folder_id: query.folder_id,
         actor,
     };
-    match enqueue_and_wait_telegram_write(&state, &ctx.user_id, TelegramJobType::DeleteFile, &payload).await {
+    match enqueue_and_wait_telegram_write(
+        &state,
+        &ctx.user_id,
+        TelegramJobType::DeleteFile,
+        &payload,
+    )
+    .await
+    {
         Ok(value) => HttpResponse::Ok().json(value),
         Err(resp) => resp,
     }
@@ -1735,7 +1803,14 @@ async fn move_telegram_files(
         target_folder_id: payload.target_folder_id,
         actor,
     };
-    match enqueue_and_wait_telegram_write(&state, &ctx.user_id, TelegramJobType::MoveFiles, &payload).await {
+    match enqueue_and_wait_telegram_write(
+        &state,
+        &ctx.user_id,
+        TelegramJobType::MoveFiles,
+        &payload,
+    )
+    .await
+    {
         Ok(value) => HttpResponse::Ok().json(value),
         Err(resp) => resp,
     }
@@ -1761,7 +1836,14 @@ async fn copy_telegram_files(
         target_folder_id: payload.target_folder_id,
         actor,
     };
-    match enqueue_and_wait_telegram_write(&state, &ctx.user_id, TelegramJobType::CopyFiles, &payload).await {
+    match enqueue_and_wait_telegram_write(
+        &state,
+        &ctx.user_id,
+        TelegramJobType::CopyFiles,
+        &payload,
+    )
+    .await
+    {
         Ok(value) => HttpResponse::Ok().json(value),
         Err(resp) => resp,
     }
@@ -1932,7 +2014,7 @@ fn session_token_from_request(state: &NasState, req: &HttpRequest) -> Option<Str
         .map(str::to_owned)
         .or_else(|| {
             req.cookie(&state.session_cookie_name)
-            .map(|cookie| cookie.value().to_string())
+                .map(|cookie| cookie.value().to_string())
         })
 }
 
@@ -1947,7 +2029,10 @@ fn retry_after_response(message: &str, retry_after_seconds: i64) -> HttpResponse
 
 fn throttled_scope(scope: &str, retry_after_seconds: i64) -> HttpResponse {
     retry_after_response(
-        &format!("Spam protection is active for {}. Please wait and try again.", scope),
+        &format!(
+            "Spam protection is active for {}. Please wait and try again.",
+            scope
+        ),
         retry_after_seconds,
     )
 }
@@ -2183,12 +2268,7 @@ async fn owner_auth_error_response(
     HttpResponse::BadRequest().json(json!({ "error": error }))
 }
 
-async fn mark_owner_code_success(
-    state: &NasState,
-    req: &HttpRequest,
-    user_id: &str,
-    phone: &str,
-) {
+async fn mark_owner_code_success(state: &NasState, req: &HttpRequest, user_id: &str, phone: &str) {
     let client_ip = client_ip(req);
     let mut keys = owner_auth_keys(&client_ip, user_id);
     let _ = activate_cooldowns(state, &keys, OWNER_AUTH_SUCCESS_COOLDOWN_SECONDS).await;
