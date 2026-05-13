@@ -258,12 +258,24 @@ fn text_message_name(message_id: i32, text: &str) -> String {
 }
 
 fn strip_upload_temp_prefix(name: &str) -> String {
-    if name.len() <= 37 {
+    const PREFIX_LEN: usize = 36;
+    const FULL_PREFIX_LEN: usize = 37;
+
+    if name.len() <= FULL_PREFIX_LEN {
         return name.to_string();
     }
 
-    let prefix = &name[..36];
-    let separator = name.as_bytes()[36];
+    let bytes = name.as_bytes();
+    let Some(prefix_bytes) = bytes.get(..PREFIX_LEN) else {
+        return name.to_string();
+    };
+    let Some(&separator) = bytes.get(PREFIX_LEN) else {
+        return name.to_string();
+    };
+
+    let Ok(prefix) = std::str::from_utf8(prefix_bytes) else {
+        return name.to_string();
+    };
     let uuidish = prefix.chars().enumerate().all(|(idx, ch)| {
         if matches!(idx, 8 | 13 | 18 | 23) {
             ch == '-' || ch == '_'
@@ -273,7 +285,7 @@ fn strip_upload_temp_prefix(name: &str) -> String {
     });
 
     if uuidish && (separator == b'-' || separator == b'_') {
-        name[37..].to_string()
+        name.get(FULL_PREFIX_LEN..).unwrap_or(name).to_string()
     } else {
         name.to_string()
     }
