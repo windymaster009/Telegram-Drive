@@ -45,7 +45,7 @@ pub async fn resolve_peer(
             let peer_id = match &dialog.peer {
                 Peer::Channel(c) => Some(c.raw.id),
                 Peer::User(u) => Some(u.raw.id()),
-                _ => None,
+                Peer::Group(group) => Some(group.id().bare_id()),
             };
             if let Some(id) = peer_id {
                 discovered.push((id, dialog.peer.clone()));
@@ -110,7 +110,7 @@ pub async fn resolve_read_peer(
     let (peer_kind, peer_id) = match &peer {
         Peer::Channel(channel) => ("channel", Some(channel.raw.id)),
         Peer::User(user) => ("user", Some(user.raw.id())),
-        _ => ("unknown", None),
+        Peer::Group(group) => ("chat", Some(group.id().bare_id())),
     };
 
     Ok(ResolvedTelegramReadPeer {

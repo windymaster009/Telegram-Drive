@@ -36,6 +36,7 @@ Environment alternatives:
 Optional:
   EXPORT_DESKTOP_DIR="D:\\app\\DESKTOP APP"
   EXPORT_ANDROID_DIR="D:\\app\\ANDROID APP"
+  ANDROID_TARGET=aarch64
   ALLOW_LOCAL_BACKEND=1
 `;
 
@@ -79,6 +80,14 @@ function resolveBackendUrl() {
   }
 
   return { value: normalized, url: parsed };
+}
+
+function resolveAndroidTarget() {
+  return (
+    optionValue("--android-target") ||
+    process.env.ANDROID_TARGET ||
+    "aarch64"
+  ).trim();
 }
 
 function assertNoSecretViteEnv(env) {
@@ -253,6 +262,7 @@ function copyArtifacts(files, destination) {
 }
 
 const { value: backendUrl, url: parsedBackendUrl } = resolveBackendUrl();
+const androidTarget = resolveAndroidTarget();
 const exportEnv = {
   ...process.env,
   VITE_API_BASE_URL: backendUrl,
@@ -272,10 +282,10 @@ function buildDesktop() {
 }
 
 function buildAndroid() {
-  console.log(`Building Android client for backend ${backendUrl}`);
+  console.log(`Building Android client for backend ${backendUrl} (target ${androidTarget})`);
   ensureAndroidCleartextCanFollowBackend();
   runFrontendBuild(exportEnv);
-  runTauri(["android", "build", "--apk", "--config", tauriConfig], exportEnv);
+  runTauri(["android", "build", "--apk", "--target", androidTarget, "--config", tauriConfig], exportEnv);
 }
 
 switch (mode) {
