@@ -1330,44 +1330,73 @@ pub async fn get_files_inner(
     let mut msgs = client.iter_messages(peer);
     let mut text_messages = Vec::new();
     while let Some(msg) = msgs.next().await.map_err(map_error)? {
-        if let Some(doc) = msg.media() {
-            let (name, size, mime, ext) = match doc {
-                Media::Document(d) => {
-                    let n = strip_upload_temp_prefix(&d.name().to_string());
-                    let s = d.size();
-                    let m = d.mime_type().map(|s| s.to_string());
-                    let e = std::path::Path::new(&n)
-                        .extension()
-                        .map(|os| os.to_str().unwrap_or("").to_string());
-                    (n, s, m, e)
+        let message_id = msg.id();
+        let created_at = msg.date().to_string();
+        let processed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let Some(doc) = msg.media() {
+                let (name, size, mime, ext) = match doc {
+                    Media::Document(d) => {
+                        let n = strip_upload_temp_prefix(&d.name().to_string());
+                        let s = d.size();
+                        let m = d.mime_type().map(|s| s.to_string());
+                        let e = std::path::Path::new(&n)
+                            .extension()
+                            .map(|os| os.to_str().unwrap_or("").to_string());
+                        (n, s, m, e)
+                    }
+                    Media::Photo(_) => (
+                        "Photo.jpg".to_string(),
+                        0,
+                        Some("image/jpeg".into()),
+                        Some("jpg".into()),
+                    ),
+                    _ => ("Unknown".to_string(), 0, None, None),
+                };
+                (
+                    Some(FileMetadata {
+                        id: message_id as i64,
+                        folder_id,
+                        name,
+                        size: size as u64,
+                        mime_type: mime,
+                        file_ext: ext,
+                        created_at: created_at.clone(),
+                        icon_type: "file".into(),
+                        text_content: None,
+                    }),
+                    None,
+                )
+            } else {
+                let text = msg.text().trim();
+                if text.is_empty() {
+                    (None, None)
+                } else {
+                    (
+                        None,
+                        Some(TextMessageEntry {
+                            id: message_id,
+                            date: created_at.clone(),
+                            text: text.to_string(),
+                        }),
+                    )
                 }
-                Media::Photo(_) => (
-                    "Photo.jpg".to_string(),
-                    0,
-                    Some("image/jpeg".into()),
-                    Some("jpg".into()),
-                ),
-                _ => ("Unknown".to_string(), 0, None, None),
-            };
-            files.push(FileMetadata {
-                id: msg.id() as i64,
-                folder_id,
-                name,
-                size: size as u64,
-                mime_type: mime,
-                file_ext: ext,
-                created_at: msg.date().to_string(),
-                icon_type: "file".into(),
-                text_content: None,
-            });
-        } else {
-            let text = msg.text().trim();
-            if !text.is_empty() {
-                text_messages.push(TextMessageEntry {
-                    id: msg.id(),
-                    date: msg.date().to_string(),
-                    text: text.to_string(),
-                });
+            }
+        }));
+
+        match processed {
+            Ok((Some(file), None)) => files.push(file),
+            Ok((None, Some(text_entry))) => text_messages.push(text_entry),
+            Ok((None, None)) => {}
+            Ok((Some(file), Some(text_entry))) => {
+                files.push(file);
+                text_messages.push(text_entry);
+            }
+            Err(_) => {
+                log::warn!(
+                    "[list-files] Skipping message {} in folder_id={:?} after metadata extraction panic",
+                    message_id,
+                    folder_id
+                );
             }
         }
     }
