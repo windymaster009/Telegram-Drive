@@ -11,7 +11,9 @@ import { useUpdateCheck } from "./hooks/useUpdateCheck";
 import { nasApi, nasSession } from "./lib/nasApi";
 import { ConfirmProvider } from "./context/ConfirmContext";
 import { ThemeProvider, useTheme } from "./context/ThemeContext";
+import { AudioPlayerProvider } from "./context/AudioPlayerContext";
 import { DropZoneProvider } from "./contexts/DropZoneContext";
+import { AudioPlayer } from "./components/audio/AudioPlayer";
 import { Toaster, toast } from "sonner";
 import type {
   AppSession,
@@ -232,6 +234,7 @@ function AppContent() {
         onDismiss={dismissUpdate}
       />
       <Toaster theme={theme} position="bottom-center" />
+      <AudioPlayer />
 
       {isBrowserGoogleCallback ? (
         <BrowserGoogleCallbackPage status={browserGoogleStatus} message={browserGoogleMessage} />
@@ -1755,11 +1758,13 @@ function App() {
     <ErrorBoundary>
       <ThemeProvider>
         <QueryClientProvider client={queryClient}>
-          <ConfirmProvider>
-            <DropZoneProvider>
-              <AppContent />
-            </DropZoneProvider>
-          </ConfirmProvider>
+          <AudioPlayerProvider>
+            <ConfirmProvider>
+              <DropZoneProvider>
+                <AppContent />
+              </DropZoneProvider>
+            </ConfirmProvider>
+          </AudioPlayerProvider>
         </QueryClientProvider>
       </ThemeProvider>
     </ErrorBoundary>

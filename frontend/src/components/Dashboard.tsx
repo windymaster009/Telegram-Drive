@@ -7,7 +7,7 @@ import { Shield } from 'lucide-react';
 
 import type { TelegramFile, BandwidthStats, TelegramFolder } from '@shared/telegram';
 import type { AppUser, PermissionAssignment } from '@shared/nas';
-import { formatBytes, isMediaFile, isPdfFile } from '../utils';
+import { formatBytes, isAudioFile, isPdfFile, isVideoFile } from '../utils';
 
 // Components
 import { Sidebar } from './dashboard/Sidebar';
@@ -32,6 +32,7 @@ import { useFileUpload } from '../hooks/useFileUpload';
 import { useFileDownload } from '../hooks/useFileDownload';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 import { nasApi } from '../lib/nasApi';
+import { useAudioPlayer } from '../context/AudioPlayerContext';
 
 interface DashboardProps {
     onLogout: () => void;
@@ -50,6 +51,7 @@ const isRootPermission = (folderId: string) => {
 
 export function Dashboard({ onLogout, permissions, allowFolderManagement = true, adminControls, currentUser }: DashboardProps) {
     const queryClient = useQueryClient();
+    const audioPlayer = useAudioPlayer();
 
 
     const {
@@ -317,6 +319,12 @@ export function Dashboard({ onLogout, permissions, allowFolderManagement = true,
         if (e.metaKey || e.ctrlKey) {
             setSelectedIds(ids => ids.includes(id) ? ids.filter(i => i !== id) : [...ids, id]);
         } else {
+            const file = displayedFiles.find(item => item.id === id);
+            if (file && file.type !== 'folder' && isAudioFile(file.name, file.mime_type)) {
+                setSelectedIds([id]);
+                handlePreview(file, displayedFiles);
+                return;
+            }
             setSelectedIds([id]);
         }
     }
@@ -326,16 +334,24 @@ export function Dashboard({ onLogout, permissions, allowFolderManagement = true,
     }, []);
 
     const handlePreview = (file: TelegramFile, orderedFiles?: TelegramFile[]) => {
-        const contextFiles = (orderedFiles || displayedFiles).filter((f) => f.type !== 'folder');
+        if (isAudioFile(file.name, file.mime_type)) {
+            audioPlayer.playTrack(file, orderedFiles || displayedFiles, activeFolderId);
+            setPreviewFile(null);
+            setPlayingFile(null);
+            setPdfFile(null);
+            return;
+        }
+
+        const contextFiles = (orderedFiles || displayedFiles).filter((f) => f.type !== 'folder' && !isAudioFile(f.name, f.mime_type));
         const contextIndex = contextFiles.findIndex((f) => f.id === file.id);
 
         setPreviewContextFiles(contextFiles);
         setPreviewContextIndex(contextIndex);
 
-        const isMedia = isMediaFile(file.name);
+        const isVideo = isVideoFile(file.name);
         const isPdf = isPdfFile(file.name);
 
-        if (isMedia) {
+        if (isVideo) {
             setPlayingFile(file);
             setPreviewFile(null);
             setPdfFile(null);
@@ -365,10 +381,10 @@ export function Dashboard({ onLogout, permissions, allowFolderManagement = true,
 
         setPreviewContextIndex(nextIndex);
 
-        const isMedia = isMediaFile(nextFile.name);
+        const isVideo = isVideoFile(nextFile.name);
         const isPdf = isPdfFile(nextFile.name);
 
-        if (isMedia) {
+        if (isVideo) {
             setPlayingFile(nextFile);
             setPreviewFile(null);
             setPdfFile(null);
