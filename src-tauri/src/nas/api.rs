@@ -59,6 +59,7 @@ const TELEGRAM_FLOOD_WAIT_BUFFER_SECONDS: i64 = 30;
 const TELEGRAM_SPAM_LOCKOUT_SECONDS: i64 = 30 * 60;
 const USER_UPLOAD_LIMIT_PER_HOUR: usize = 30;
 const GLOBAL_UPLOAD_LIMIT_PER_HOUR: usize = 120;
+const TELEGRAM_LIST_FILES_TIMEOUT_SECONDS: u64 = 45;
 
 #[derive(Clone)]
 struct RequestContext {
@@ -1386,9 +1387,14 @@ async fn list_telegram_files(
         return HttpResponse::InternalServerError().json(json!({ "error": err }));
     }
 
-    match get_files_inner(query.folder_id, state.telegram.as_ref()).await {
-        Ok(files) => HttpResponse::Ok().json(files),
-        Err(err) => {
+    match timeout(
+        TokioDuration::from_secs(TELEGRAM_LIST_FILES_TIMEOUT_SECONDS),
+        get_files_inner(query.folder_id, state.telegram.as_ref()),
+    )
+    .await
+    {
+        Ok(Ok(files)) => HttpResponse::Ok().json(files),
+        Ok(Err(err)) => {
             log::error!(
                 "[list-files] Telegram file listing failed for folder_id={:?} saved_messages={}: {}",
                 query.folder_id,
@@ -1396,6 +1402,19 @@ async fn list_telegram_files(
                 err
             );
             HttpResponse::BadRequest().json(json!({ "error": err }))
+        }
+        Err(_) => {
+            let message = if is_saved_messages {
+                "Loading Saved Messages timed out after 45 seconds. The owner account may have too many messages there, or Telegram is responding too slowly. Try a normal folder first or check the Pi backend logs."
+            } else {
+                "Loading Telegram files timed out after 45 seconds. Check the Pi backend logs and Telegram connectivity, then try again."
+            };
+            log::error!(
+                "[list-files] Telegram file listing timed out for folder_id={:?} saved_messages={}",
+                query.folder_id,
+                is_saved_messages
+            );
+            HttpResponse::GatewayTimeout().json(json!({ "error": message }))
         }
     }
 }
