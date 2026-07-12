@@ -23,6 +23,7 @@ import type {
   QrTokenResponse,
   SystemStatus,
 } from "@shared/nas";
+import type { TelegramFolder } from "@shared/telegram";
 import khFlag from "flag-icons/flags/4x3/kh.svg?url";
 import usFlag from "flag-icons/flags/4x3/us.svg?url";
 import vnFlag from "flag-icons/flags/4x3/vn.svg?url";
@@ -761,7 +762,7 @@ function AdminConsole({
 
       <section className="min-h-0 flex-1 overflow-auto p-6">
         {tab === "owner" && <OwnerTelegramPanel csrfToken={csrfToken} onOpenStorage={() => setTab("storage")} />}
-        {tab === "users" && <UsersPanel csrfToken={csrfToken} />}
+        {tab === "users" && <UsersPanel csrfToken={csrfToken} me={me} />}
         {tab === "sessions" && <SessionsPanel csrfToken={csrfToken} />}
         {tab === "audit" && <AuditPanel />}
       </section>
@@ -1097,7 +1098,7 @@ function OwnerTelegramPanel({ csrfToken, onOpenStorage }: { csrfToken: string | 
   );
 }
 
-function UsersPanel({ csrfToken }: { csrfToken: string | null }) {
+function UsersPanel({ csrfToken, me }: { csrfToken: string | null; me: MeResponse }) {
   const client = useQueryClient();
   const users = useQuery({ queryKey: ["admin-users"], queryFn: nasApi.listUsers, retry: false });
   const [draft, setDraft] = useState<{ username: string; password: string; display_name: string; telegram_username: string; disabled: boolean; role: "admin" | "user" }>({
@@ -1125,10 +1126,10 @@ function UsersPanel({ csrfToken }: { csrfToken: string | null }) {
         const scannedFolders = await invoke<TelegramFolder[]>("cmd_scan_folders", {
           accessToken: nasSession.getAccessToken(),
           actor: {
-            userId: me.id,
-            displayName: me.display_name,
-            email: me.email || me.username,
-            role: me.role,
+            userId: me.user.id,
+            displayName: me.user.display_name,
+            email: me.user.email || me.user.username,
+            role: me.user.role,
           },
         });
         return mergeTelegramFolders(storedFolders, scannedFolders);
