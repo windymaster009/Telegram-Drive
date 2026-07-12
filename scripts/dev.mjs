@@ -1,10 +1,14 @@
 import { spawn } from "node:child_process";
 
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+const spawnOptions = {
+  stdio: "inherit",
+  shell: process.platform === "win32",
+};
 
 const children = [
-  spawn(npm, ["--prefix", "backend", "run", "api"], { stdio: "inherit" }),
-  spawn(npm, ["--prefix", "frontend", "run", "dev"], { stdio: "inherit" }),
+  spawn(npm, ["--prefix", "backend", "run", "api"], spawnOptions),
+  spawn(npm, ["--prefix", "frontend", "run", "dev"], spawnOptions),
 ];
 
 let shuttingDown = false;
