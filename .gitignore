@@ -27,6 +27,8 @@ target/
 
 # Misc
 CompiledApps/
+/tools/
+/screenshots/telegram-drive-local.png
 *.log
 Error.html
 **/LatestError.html

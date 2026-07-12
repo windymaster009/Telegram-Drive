@@ -3,9 +3,13 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readdirSync,
+  rmSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -273,19 +277,25 @@ const exportEnv = {
 };
 assertNoSecretViteEnv(exportEnv);
 
-const tauriConfig = tauriConfigForBackend(parsedBackendUrl);
+const tauriConfigDir = mkdtempSync(path.join(os.tmpdir(), "telegram-drive-tauri-"));
+const tauriConfigPath = path.join(tauriConfigDir, "tauri-export.json");
+writeFileSync(tauriConfigPath, tauriConfigForBackend(parsedBackendUrl));
+
+process.on("exit", () => {
+  rmSync(tauriConfigDir, { recursive: true, force: true });
+});
 
 function buildDesktop() {
   console.log(`Building desktop client for backend ${backendUrl}`);
   runFrontendBuild(exportEnv);
-  runTauri(["build", "--bundles", "nsis", "--config", tauriConfig], exportEnv);
+  runTauri(["build", "--bundles", "nsis", "--config", tauriConfigPath], exportEnv);
 }
 
 function buildAndroid() {
   console.log(`Building Android client for backend ${backendUrl} (target ${androidTarget})`);
   ensureAndroidCleartextCanFollowBackend();
   runFrontendBuild(exportEnv);
-  runTauri(["android", "build", "--apk", "--target", androidTarget, "--config", tauriConfig], exportEnv);
+  runTauri(["android", "build", "--apk", "--target", androidTarget, "--config", tauriConfigPath], exportEnv);
 }
 
 switch (mode) {

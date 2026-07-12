@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import process from "node:process";
 
 const cargoBinDir = process.platform === "win32" && process.env.USERPROFILE
@@ -47,4 +47,23 @@ if (!hasCargo) {
   }
 
   process.exit(1);
+}
+
+if (process.platform === "win32") {
+  const javaHomes = [
+    process.env.JAVA_HOME,
+    "C:\\Program Files\\Android\\Android Studio\\jbr",
+    ...["C:\\Program Files\\Microsoft", "C:\\Program Files\\Eclipse Adoptium", "C:\\Program Files\\Java"]
+      .filter(existsSync)
+      .flatMap((directory) => readdirSync(directory, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && /(?:jdk|jbr).*(?:17|18|19|2\d)/i.test(entry.name))
+        .map((entry) => `${directory}\\${entry.name}`)),
+  ].filter((directory) => directory && existsSync(`${directory}\\bin\\java.exe`));
+
+  if (javaHomes.length === 0) {
+    console.error("\nMissing a compatible 64-bit JDK (Java 17 or newer).");
+    console.error("Install Microsoft OpenJDK 17, then run the command again:");
+    console.error("  winget install --id Microsoft.OpenJDK.17 -e");
+    process.exit(1);
+  }
 }
