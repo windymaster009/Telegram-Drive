@@ -1345,7 +1345,7 @@ pub async fn get_files_inner(
                         (n, s, m, e)
                     }
                     Media::Photo(_) => (
-                        "Photo.jpg".to_string(),
+                        format!("Photo-{}.jpg", message_id),
                         0,
                         Some("image/jpeg".into()),
                         Some("jpg".into()),

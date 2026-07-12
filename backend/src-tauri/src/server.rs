@@ -808,14 +808,23 @@ fn parse_range(range_header: Option<&header::HeaderValue>, size: u64) -> Option<
 
 fn mime_type_from_media(media: &Media) -> String {
     match media {
+        Media::Photo(_) => "image/jpeg".to_string(),
+
         Media::Document(d) => {
             let telegram_mime = d.mime_type().unwrap_or("application/octet-stream");
+
             if telegram_mime != "application/octet-stream" {
                 return telegram_mime.to_string();
             }
 
             let name = d.name().to_lowercase();
+
             match name.rsplit_once('.').map(|(_, ext)| ext) {
+                Some("jpg") | Some("jpeg") => "image/jpeg",
+                Some("png") => "image/png",
+                Some("gif") => "image/gif",
+                Some("webp") => "image/webp",
+                Some("bmp") => "image/bmp",
                 Some("mp4") => "video/mp4",
                 Some("webm") => "video/webm",
                 Some("mov") => "video/quicktime",
@@ -829,6 +838,7 @@ fn mime_type_from_media(media: &Media) -> String {
             }
             .to_string()
         }
+
         _ => "application/octet-stream".to_string(),
     }
 }

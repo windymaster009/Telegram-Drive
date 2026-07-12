@@ -97,6 +97,13 @@ export function FileCard({ file, onDelete, onDownload, onPreview, isSelected, on
                             alt={file.name}
                             className="w-full h-full object-cover"
                         />
+                        <img
+                            src={thumbnail}
+                            alt={file.name}
+                            loading="lazy"
+                            onError={() => setThumbnail(null)}
+                            className="w-full h-full object-cover"
+                        />
                         {/* Gradient overlay for text readability */}
                         <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent" />
                     </div>
@@ -144,6 +151,7 @@ export function FileCard({ file, onDelete, onDownload, onPreview, isSelected, on
                     )}
                 </div>
             </motion.div>
+
         </div>
     )
 }
