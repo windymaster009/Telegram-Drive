@@ -28,6 +28,7 @@ const extensionMap: Record<string, { icon: typeof File; color: string }> = {
     flac: { icon: FileAudio, color: 'text-green-400' },
     aac: { icon: FileAudio, color: 'text-green-400' },
     ogg: { icon: FileAudio, color: 'text-green-400' },
+    m4a: { icon: FileAudio, color: 'text-green-400' },
 
     // Documents
     pdf: { icon: FileType, color: 'text-red-400' },

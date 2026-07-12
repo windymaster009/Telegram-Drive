@@ -3,7 +3,7 @@ use grammers_client::Client;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 
 /// Tracks the lifecycle of the Telegram connection
 ///
@@ -31,6 +31,10 @@ pub struct TelegramState {
     /// Populated lazily on first resolve_peer call, eagerly during cmd_scan_folders.
     /// Cleared on logout.
     pub peer_cache: Arc<tokio::sync::RwLock<HashMap<i64, Peer>>>,
+    /// Lightweight limiter for Telegram read operations so list/preview/download
+    /// do not stampede the client, while still staying independent from the
+    /// strict write queue.
+    pub read_gate: Arc<Semaphore>,
 }
 
 pub mod auth;

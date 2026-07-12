@@ -12,7 +12,7 @@ import type {
 import type { TelegramFile, TelegramFolder } from "@shared/telegram";
 
 export const getApiBaseUrl = () => {
-  const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL;
+  const configuredBaseUrl = import.meta.env.VITE_BACKEND_URL || import.meta.env.VITE_API_BASE_URL;
   if (configuredBaseUrl) return configuredBaseUrl.replace(/\/$/, "");
 
   const currentHost = window.location.hostname;
@@ -117,7 +117,7 @@ export const nasApi = {
     const params = new URLSearchParams();
     if (folderId !== null) params.set("folder_id", String(folderId));
     const suffix = params.toString() ? `?${params.toString()}` : "";
-    return request<TelegramFile[]>(`/api/telegram/files${suffix}`);
+    return requestWithTimeout<TelegramFile[]>(`/api/telegram/files${suffix}`, {}, undefined, 50000);
   },
   scanTelegramFolders: () => request<TelegramFolder[]>("/api/telegram/folders/scan"),
   createTelegramFolder: (name: string) =>

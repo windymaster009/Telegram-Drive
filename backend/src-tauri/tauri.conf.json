@@ -9,10 +9,10 @@
     }
   },
   "productName": "Telegram Drive",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "identifier": "com.cameronamer.telegramdrive",
   "build": {
-    "beforeDevCommand": "npm run dev --prefix ../frontend",
+    "beforeDevCommand": "npm run dev --prefix ../frontend -- --host 0.0.0.0",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "npm run build --prefix ../frontend",
     "frontendDist": "../../frontend/dist"

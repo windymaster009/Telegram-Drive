@@ -12,25 +12,54 @@ use super::db::GoogleUserProfile;
 use super::models::{
     AppRole, ApprovalStatus, AuthClaims, BootstrapRequest, GoogleLoginRequest, LoginRequest,
     LoginResponse, MeResponse, OwnerConfigRequest, PermissionUpdateRequest, PublicQrRequest,
-    QrStatusResponse, QrTokenResponse, SystemStatus, UserApprovalRequest, UserPatchRequest,
-    UserUpsertRequest,
+    QrStatusResponse, QrTokenResponse, SystemStatus, TelegramJobStatusResponse, TelegramJobType,
+    UserApprovalRequest, UserPatchRequest, UserUpsertRequest,
 };
 use super::state::NasState;
+use super::telegram_queue::{
+    enqueue_telegram_job, telegram_job_timeout, wait_for_telegram_job, TelegramJobWaitError,
+    TelegramWriteJobPayload,
+};
 use crate::commands::auth::{
     check_password_inner, clear_runtime_client_inner, ensure_owner_client_connected, logout_inner,
     owner_session_status_inner, request_owner_code_inner, sign_in_inner,
 };
 use crate::commands::fs::{
-    copy_files_inner, create_folder_inner, delete_file_inner, delete_folder_inner, get_files_inner,
-    move_files_inner, rename_folder_inner, scan_folders_for_user, search_global_inner,
-    set_folder_icon_inner, set_folder_password_inner, upload_file_inner,
-    verify_folder_password_inner, FolderPasswordUpdate,
+    get_files_inner, scan_folders_for_user, search_global_inner, set_folder_icon_inner,
+    set_folder_password_inner, verify_folder_password_inner, FolderActor, FolderPasswordUpdate,
 };
 use crate::models::FolderMetadata;
 
 const SESSION_TTL_SECONDS: i64 = 60 * 60 * 24 * 14;
 const QR_TTL_SECONDS: i64 = 60 * 10;
 const DESKTOP_GOOGLE_LOGIN_TTL_SECONDS: i64 = 60 * 5;
+const LOGIN_IP_LIMIT: usize = 8;
+const LOGIN_IP_WINDOW_SECONDS: i64 = 5 * 60;
+const LOGIN_IDENTIFIER_LIMIT: usize = 6;
+const LOGIN_IDENTIFIER_WINDOW_SECONDS: i64 = 10 * 60;
+const LOGIN_FAILURE_COOLDOWN_SECONDS: i64 = 5;
+const OWNER_AUTH_IP_LIMIT: usize = 6;
+const OWNER_AUTH_IP_WINDOW_SECONDS: i64 = 10 * 60;
+const OWNER_AUTH_USER_LIMIT: usize = 6;
+const OWNER_AUTH_USER_WINDOW_SECONDS: i64 = 10 * 60;
+const OWNER_CODE_PHONE_LIMIT: usize = 3;
+const OWNER_CODE_PHONE_WINDOW_SECONDS: i64 = 30 * 60;
+const OWNER_CODE_SUCCESS_COOLDOWN_SECONDS: i64 = 90;
+const OWNER_AUTH_SUCCESS_COOLDOWN_SECONDS: i64 = 15;
+const OWNER_AUTH_MIN_PENALTY_SECONDS: i64 = 5 * 60;
+const TELEGRAM_WRITE_IP_LIMIT: usize = 40;
+const TELEGRAM_WRITE_IP_WINDOW_SECONDS: i64 = 10 * 60;
+const TELEGRAM_WRITE_USER_LIMIT: usize = 24;
+const TELEGRAM_WRITE_USER_WINDOW_SECONDS: i64 = 10 * 60;
+const TELEGRAM_WRITE_GLOBAL_LIMIT: usize = 90;
+const TELEGRAM_WRITE_GLOBAL_WINDOW_SECONDS: i64 = 60 * 60;
+const TELEGRAM_WRITE_SUCCESS_COOLDOWN_SECONDS: i64 = 2;
+const TELEGRAM_WRITE_MIN_PENALTY_SECONDS: i64 = 3 * 60;
+const TELEGRAM_FLOOD_WAIT_BUFFER_SECONDS: i64 = 30;
+const TELEGRAM_SPAM_LOCKOUT_SECONDS: i64 = 30 * 60;
+const USER_UPLOAD_LIMIT_PER_HOUR: usize = 30;
+const GLOBAL_UPLOAD_LIMIT_PER_HOUR: usize = 120;
+const TELEGRAM_LIST_FILES_TIMEOUT_SECONDS: u64 = 45;
 
 #[derive(Clone)]
 struct RequestContext {
@@ -80,6 +109,7 @@ pub fn configure_api(cfg: &mut web::ServiceConfig) {
         .service(set_telegram_folder_icon)
         .service(set_telegram_folder_password)
         .service(verify_telegram_folder_password)
+        .service(get_telegram_job_status)
         .service(upload_telegram_file)
         .service(delete_telegram_file)
         .service(move_telegram_files)
@@ -259,6 +289,73 @@ struct MoveCopyRequest {
 #[derive(serde::Deserialize)]
 struct SearchQuery {
     query: String,
+}
+
+async fn folder_actor_for_user(
+    state: &NasState,
+    user_id: &str,
+) -> Result<FolderActor, HttpResponse> {
+    let user = state
+        .db
+        .get_user_by_id(user_id.to_string())
+        .await
+        .map_err(|err| HttpResponse::InternalServerError().json(json!({ "error": err })))?
+        .ok_or_else(|| {
+            HttpResponse::Unauthorized()
+                .json(json!({ "error": "User account is no longer available" }))
+        })?;
+    Ok(FolderActor {
+        user_id: user.id,
+        display_name: user.display_name,
+        email: user.email,
+        role: user.role,
+    })
+}
+
+async fn enqueue_and_wait_telegram_write(
+    state: &NasState,
+    user_id: &str,
+    job_type: TelegramJobType,
+    payload: &TelegramWriteJobPayload,
+) -> Result<serde_json::Value, HttpResponse> {
+    let job = enqueue_telegram_job(
+        state,
+        job_type.clone(),
+        user_id.to_string(),
+        payload,
+        telegram_job_priority(&job_type),
+    )
+    .await
+    .map_err(|err| HttpResponse::InternalServerError().json(json!({ "error": err })))?;
+
+    match wait_for_telegram_job::<serde_json::Value>(state, &job.id, telegram_job_timeout()).await {
+        Ok(value) => Ok(value),
+        Err(TelegramJobWaitError::Failed(err)) => {
+            Err(HttpResponse::BadRequest().json(json!({ "error": err, "job_id": job.id })))
+        }
+        Err(TelegramJobWaitError::TimedOut(job)) => Err(HttpResponse::Accepted().json(json!({
+            "job_id": job.id,
+            "status": job.status,
+            "retry_after_seconds": (job.run_after - now_ts()).max(0),
+        }))),
+        Err(TelegramJobWaitError::Missing) => Err(HttpResponse::InternalServerError()
+            .json(json!({ "error": "Queued Telegram job disappeared unexpectedly" }))),
+        Err(TelegramJobWaitError::InvalidResult(err)) => {
+            Err(HttpResponse::InternalServerError().json(json!({ "error": err, "job_id": job.id })))
+        }
+    }
+}
+
+fn telegram_job_priority(job_type: &TelegramJobType) -> i32 {
+    match job_type {
+        TelegramJobType::CreateFolder => 50,
+        TelegramJobType::RenameFolder => 40,
+        TelegramJobType::DeleteFolder => 40,
+        TelegramJobType::DeleteFile => 35,
+        TelegramJobType::MoveFiles => 30,
+        TelegramJobType::CopyFiles => 30,
+        TelegramJobType::UploadFile => 20,
+    }
 }
 
 #[post("/api/auth/google")]
@@ -678,11 +775,8 @@ async fn login(
     payload: web::Json<LoginRequest>,
     req: HttpRequest,
 ) -> impl Responder {
-    if !state
-        .allow_rate(format!("login:{}", client_ip(&req)), 10, 60)
-        .await
-    {
-        return HttpResponse::TooManyRequests().json(json!({ "error": "Too many login attempts" }));
+    if let Err(resp) = guard_login_attempt(&state, &req, &payload.username).await {
+        return resp;
     }
 
     let record = match state
@@ -692,7 +786,8 @@ async fn login(
     {
         Ok(Some(record)) => record,
         Ok(None) => {
-            return HttpResponse::Unauthorized().json(json!({ "error": "Invalid credentials" }))
+            mark_login_failure(&state, &req, &payload.username).await;
+            return HttpResponse::Unauthorized().json(json!({ "error": "Invalid credentials" }));
         }
         Err(err) => return HttpResponse::InternalServerError().json(json!({ "error": err })),
     };
@@ -704,7 +799,10 @@ async fn login(
 
     match verify_password(&payload.password, &password_hash) {
         Ok(true) => issue_login_response(&state, &user, &req).await,
-        Ok(false) => HttpResponse::Unauthorized().json(json!({ "error": "Invalid credentials" })),
+        Ok(false) => {
+            mark_login_failure(&state, &req, &payload.username).await;
+            HttpResponse::Unauthorized().json(json!({ "error": "Invalid credentials" }))
+        }
         Err(err) => HttpResponse::InternalServerError().json(json!({ "error": err })),
     }
 }
@@ -1199,27 +1297,34 @@ async fn request_owner_code(
     req: HttpRequest,
     payload: web::Json<OwnerCodeRequest>,
 ) -> impl Responder {
-    if let Err(resp) = authorize(&state, &req, true).await {
-        return resp;
-    }
+    let ctx = match authorize(&state, &req, true).await {
+        Ok(ctx) => ctx,
+        Err(resp) => return resp,
+    };
 
     let phone = payload.phone.trim().replace(' ', "");
     if phone.is_empty() {
         return HttpResponse::BadRequest()
             .json(json!({ "error": "Telegram phone number is required" }));
     }
+    if let Err(resp) = guard_owner_code_request(&state, &req, &ctx.user_id, &phone).await {
+        return resp;
+    }
 
     match timeout(
         TokioDuration::from_secs(60),
-        request_owner_code_inner(&state, phone),
+        request_owner_code_inner(&state, phone.clone()),
     )
     .await
     {
         Err(_) => HttpResponse::GatewayTimeout().json(json!({
             "error": "Telegram code request timed out after 60 seconds. Check Pi Telegram connectivity and backend logs, then try again."
         })),
-        Ok(Ok(status)) => HttpResponse::Ok().json(json!({ "status": status })),
-        Ok(Err(err)) => HttpResponse::BadRequest().json(json!({ "error": err })),
+        Ok(Ok(status)) => {
+            mark_owner_code_success(&state, &req, &ctx.user_id, &phone).await;
+            HttpResponse::Ok().json(json!({ "status": status }))
+        }
+        Ok(Err(err)) => owner_auth_error_response(&state, &req, &ctx.user_id, Some(&phone), err).await,
     }
 }
 
@@ -1229,17 +1334,21 @@ async fn owner_sign_in(
     req: HttpRequest,
     payload: web::Json<OwnerSignInRequest>,
 ) -> impl Responder {
-    if let Err(resp) = authorize(&state, &req, true).await {
-        return resp;
-    }
+    let ctx = match authorize(&state, &req, true).await {
+        Ok(ctx) => ctx,
+        Err(resp) => return resp,
+    };
 
     if payload.code.trim().is_empty() {
         return HttpResponse::BadRequest().json(json!({ "error": "Telegram code is required" }));
     }
+    if let Err(resp) = guard_owner_auth_attempt(&state, &req, &ctx.user_id).await {
+        return resp;
+    }
 
     match sign_in_inner(state.telegram.as_ref(), payload.code.trim().to_string()).await {
         Ok(result) => HttpResponse::Ok().json(result),
-        Err(err) => HttpResponse::BadRequest().json(json!({ "error": err })),
+        Err(err) => owner_auth_error_response(&state, &req, &ctx.user_id, None, err).await,
     }
 }
 
@@ -1249,18 +1358,22 @@ async fn owner_check_password(
     req: HttpRequest,
     payload: web::Json<OwnerPasswordRequest>,
 ) -> impl Responder {
-    if let Err(resp) = authorize(&state, &req, true).await {
-        return resp;
-    }
+    let ctx = match authorize(&state, &req, true).await {
+        Ok(ctx) => ctx,
+        Err(resp) => return resp,
+    };
 
     if payload.password.is_empty() {
         return HttpResponse::BadRequest()
             .json(json!({ "error": "Telegram 2FA password is required" }));
     }
+    if let Err(resp) = guard_owner_auth_attempt(&state, &req, &ctx.user_id).await {
+        return resp;
+    }
 
     match check_password_inner(state.telegram.as_ref(), payload.password.clone()).await {
         Ok(result) => HttpResponse::Ok().json(result),
-        Err(err) => HttpResponse::BadRequest().json(json!({ "error": err })),
+        Err(err) => owner_auth_error_response(&state, &req, &ctx.user_id, None, err).await,
     }
 }
 
@@ -1295,17 +1408,67 @@ async fn list_telegram_files(
     req: HttpRequest,
     query: web::Query<FilesQuery>,
 ) -> impl Responder {
-    if let Err(resp) = authorize(&state, &req, false).await {
-        return resp;
+    let ctx = match authorize(&state, &req, false).await {
+        Ok(ctx) => ctx,
+        Err(resp) => return resp,
+    };
+
+    let is_saved_messages = query.folder_id.is_none();
+    match state.db.get_telegram_global_cooldown().await {
+        Ok(Some(until)) => log::info!(
+            "[list-files] Telegram write cooldown active until {}, but read request will proceed independently",
+            until
+        ),
+        Ok(None) => {}
+        Err(err) => log::warn!("[list-files] Could not inspect Telegram write cooldown: {}", err),
     }
+    log::info!(
+        "[list-files] HTTP request user_id={} session_id={} folder_id={:?} saved_messages={}",
+        ctx.user_id,
+        ctx.session_id,
+        query.folder_id,
+        is_saved_messages
+    );
 
     if let Err(err) = ensure_owner_client_connected(&state).await {
+        log::error!(
+            "[list-files] Owner Telegram client connection failed for folder_id={:?} saved_messages={}: {}",
+            query.folder_id,
+            is_saved_messages,
+            err
+        );
         return HttpResponse::InternalServerError().json(json!({ "error": err }));
     }
 
-    match get_files_inner(query.folder_id, state.telegram.as_ref()).await {
-        Ok(files) => HttpResponse::Ok().json(files),
-        Err(err) => HttpResponse::BadRequest().json(json!({ "error": err })),
+    match timeout(
+        TokioDuration::from_secs(TELEGRAM_LIST_FILES_TIMEOUT_SECONDS),
+        get_files_inner(query.folder_id, state.telegram.as_ref()),
+    )
+    .await
+    {
+        Ok(Ok(files)) => HttpResponse::Ok().json(files),
+        Ok(Err(err)) => {
+            log::error!(
+                "[list-files] Telegram file listing failed for folder_id={:?} saved_messages={}: {}",
+                query.folder_id,
+                is_saved_messages,
+                err
+            );
+            HttpResponse::BadRequest().json(json!({ "error": err }))
+        }
+        Err(_) => {
+            let message = if is_saved_messages {
+                "Loading Saved Messages timed out after 45 seconds. The owner account may have too many messages there, or Telegram is responding too slowly. Try a normal folder first or check the Pi backend logs."
+            } else {
+                "Loading Telegram files timed out after 45 seconds. Check the Pi backend logs and Telegram connectivity, then try again."
+            };
+            log::error!(
+                "[list-files] Telegram file listing timed out for folder_id={:?} saved_messages={}",
+                query.folder_id,
+                is_saved_messages
+            );
+            HttpResponse::GatewayTimeout().json(json!({ "error": message }))
+        }
     }
 }
 
@@ -1363,21 +1526,28 @@ async fn create_telegram_folder(
     req: HttpRequest,
     payload: web::Json<CreateFolderRequest>,
 ) -> impl Responder {
-    if let Err(resp) = authorize(&state, &req, false).await {
-        return resp;
-    }
-    let token = session_token_from_request(&state, &req);
-    match create_folder_inner(
-        payload.name.clone(),
-        token,
-        None,
-        state.telegram.as_ref(),
+    let ctx = match authorize(&state, &req, false).await {
+        Ok(ctx) => ctx,
+        Err(resp) => return resp,
+    };
+    let actor = match folder_actor_for_user(&state, &ctx.user_id).await {
+        Ok(actor) => actor,
+        Err(resp) => return resp,
+    };
+    let payload = TelegramWriteJobPayload::CreateFolder {
+        name: payload.name.clone(),
+        actor,
+    };
+    match enqueue_and_wait_telegram_write(
         &state,
+        &ctx.user_id,
+        TelegramJobType::CreateFolder,
+        &payload,
     )
     .await
     {
-        Ok(folder) => HttpResponse::Ok().json(folder),
-        Err(err) => HttpResponse::BadRequest().json(json!({ "error": err })),
+        Ok(value) => HttpResponse::Ok().json(value),
+        Err(resp) => resp,
     }
 }
 
@@ -1387,21 +1557,28 @@ async fn delete_telegram_folder(
     req: HttpRequest,
     path: web::Path<i64>,
 ) -> impl Responder {
-    if let Err(resp) = authorize(&state, &req, false).await {
-        return resp;
-    }
-    let token = session_token_from_request(&state, &req);
-    match delete_folder_inner(
-        path.into_inner(),
-        token,
-        None,
-        state.telegram.as_ref(),
+    let ctx = match authorize(&state, &req, false).await {
+        Ok(ctx) => ctx,
+        Err(resp) => return resp,
+    };
+    let actor = match folder_actor_for_user(&state, &ctx.user_id).await {
+        Ok(actor) => actor,
+        Err(resp) => return resp,
+    };
+    let payload = TelegramWriteJobPayload::DeleteFolder {
+        folder_id: path.into_inner(),
+        actor,
+    };
+    match enqueue_and_wait_telegram_write(
         &state,
+        &ctx.user_id,
+        TelegramJobType::DeleteFolder,
+        &payload,
     )
     .await
     {
-        Ok(ok) => HttpResponse::Ok().json(json!({ "ok": ok })),
-        Err(err) => HttpResponse::BadRequest().json(json!({ "error": err })),
+        Ok(value) => HttpResponse::Ok().json(value),
+        Err(resp) => resp,
     }
 }
 
@@ -1412,22 +1589,29 @@ async fn rename_telegram_folder(
     path: web::Path<i64>,
     payload: web::Json<RenameFolderRequest>,
 ) -> impl Responder {
-    if let Err(resp) = authorize(&state, &req, false).await {
-        return resp;
-    }
-    let token = session_token_from_request(&state, &req);
-    match rename_folder_inner(
-        path.into_inner(),
-        payload.name.clone(),
-        token,
-        None,
-        state.telegram.as_ref(),
+    let ctx = match authorize(&state, &req, false).await {
+        Ok(ctx) => ctx,
+        Err(resp) => return resp,
+    };
+    let actor = match folder_actor_for_user(&state, &ctx.user_id).await {
+        Ok(actor) => actor,
+        Err(resp) => return resp,
+    };
+    let payload = TelegramWriteJobPayload::RenameFolder {
+        folder_id: path.into_inner(),
+        name: payload.name.clone(),
+        actor,
+    };
+    match enqueue_and_wait_telegram_write(
         &state,
+        &ctx.user_id,
+        TelegramJobType::RenameFolder,
+        &payload,
     )
     .await
     {
-        Ok(folder) => HttpResponse::Ok().json(folder),
-        Err(err) => HttpResponse::BadRequest().json(json!({ "error": err })),
+        Ok(value) => HttpResponse::Ok().json(value),
+        Err(resp) => resp,
     }
 }
 
@@ -1438,14 +1622,21 @@ async fn set_telegram_folder_icon(
     path: web::Path<i64>,
     payload: web::Json<FolderIconRequest>,
 ) -> impl Responder {
-    if let Err(resp) = authorize(&state, &req, false).await {
+    let ctx = match authorize(&state, &req, false).await {
+        Ok(ctx) => ctx,
+        Err(resp) => return resp,
+    };
+    if let Err(resp) = guard_telegram_write(&state, &req, &ctx.user_id, "set-folder-icon").await {
         return resp;
     }
     let token = session_token_from_request(&state, &req);
     match set_folder_icon_inner(path.into_inner(), payload.icon.clone(), token, None, &state).await
     {
-        Ok(folder) => HttpResponse::Ok().json(folder),
-        Err(err) => HttpResponse::BadRequest().json(json!({ "error": err })),
+        Ok(folder) => {
+            mark_telegram_write_success(&state, &req, &ctx.user_id).await;
+            HttpResponse::Ok().json(folder)
+        }
+        Err(err) => telegram_write_error_response(&state, &req, &ctx.user_id, err).await,
     }
 }
 
@@ -1456,7 +1647,12 @@ async fn set_telegram_folder_password(
     path: web::Path<i64>,
     payload: web::Json<FolderPasswordRequest>,
 ) -> impl Responder {
-    if let Err(resp) = authorize(&state, &req, false).await {
+    let ctx = match authorize(&state, &req, false).await {
+        Ok(ctx) => ctx,
+        Err(resp) => return resp,
+    };
+    if let Err(resp) = guard_telegram_write(&state, &req, &ctx.user_id, "set-folder-password").await
+    {
         return resp;
     }
     let token = session_token_from_request(&state, &req);
@@ -1465,8 +1661,11 @@ async fn set_telegram_folder_password(
         remove_password: payload.remove_password,
     };
     match set_folder_password_inner(path.into_inner(), update, token, None, &state).await {
-        Ok(ok) => HttpResponse::Ok().json(json!({ "ok": ok })),
-        Err(err) => HttpResponse::BadRequest().json(json!({ "error": err })),
+        Ok(ok) => {
+            mark_telegram_write_success(&state, &req, &ctx.user_id).await;
+            HttpResponse::Ok().json(json!({ "ok": ok }))
+        }
+        Err(err) => telegram_write_error_response(&state, &req, &ctx.user_id, err).await,
     }
 }
 
@@ -1486,6 +1685,50 @@ async fn verify_telegram_folder_password(
     }
 }
 
+#[get("/api/telegram/jobs/{job_id}")]
+async fn get_telegram_job_status(
+    state: web::Data<NasState>,
+    req: HttpRequest,
+    path: web::Path<String>,
+) -> impl Responder {
+    let ctx = match authorize(&state, &req, false).await {
+        Ok(ctx) => ctx,
+        Err(resp) => return resp,
+    };
+
+    let job_id = path.into_inner();
+    let job = match state.db.get_telegram_job(&job_id).await {
+        Ok(Some(job)) => job,
+        Ok(None) => {
+            return HttpResponse::NotFound().json(json!({ "error": "Telegram job not found" }));
+        }
+        Err(err) => {
+            return HttpResponse::InternalServerError().json(json!({ "error": err }));
+        }
+    };
+
+    let user = match state.db.get_user_by_id(ctx.user_id.clone()).await {
+        Ok(Some(user)) => user,
+        Ok(None) => {
+            return HttpResponse::Unauthorized().json(json!({ "error": "User account not found" }));
+        }
+        Err(err) => {
+            return HttpResponse::InternalServerError().json(json!({ "error": err }));
+        }
+    };
+
+    if user.role != AppRole::Admin && job.user_id != ctx.user_id {
+        return HttpResponse::NotFound().json(json!({ "error": "Telegram job not found" }));
+    }
+
+    let result = match &job.result_json {
+        Some(raw) => serde_json::from_str(raw).ok(),
+        None => None,
+    };
+
+    HttpResponse::Ok().json(TelegramJobStatusResponse { job, result })
+}
+
 #[post("/api/telegram/upload")]
 async fn upload_telegram_file(
     state: web::Data<NasState>,
@@ -1493,8 +1736,33 @@ async fn upload_telegram_file(
     query: web::Query<UploadQuery>,
     mut payload: web::Payload,
 ) -> impl Responder {
-    if let Err(resp) = authorize(&state, &req, false).await {
-        return resp;
+    let ctx = match authorize(&state, &req, false).await {
+        Ok(ctx) => ctx,
+        Err(resp) => return resp,
+    };
+    if !state
+        .allow_rate(
+            format!("telegram-upload-user:{}", ctx.user_id),
+            USER_UPLOAD_LIMIT_PER_HOUR,
+            60 * 60,
+        )
+        .await
+    {
+        return HttpResponse::TooManyRequests().json(json!({
+            "error": "Upload limit reached. Please wait before uploading more files."
+        }));
+    }
+    if !state
+        .allow_rate(
+            "telegram-upload-global".to_string(),
+            GLOBAL_UPLOAD_LIMIT_PER_HOUR,
+            60 * 60,
+        )
+        .await
+    {
+        return HttpResponse::TooManyRequests().json(json!({
+            "error": "Server upload queue is busy. Please try again later."
+        }));
     }
     let file_name = query
         .file_name
@@ -1529,24 +1797,28 @@ async fn upload_telegram_file(
         }
     }
     drop(file);
-
-    let token = session_token_from_request(&state, &req);
-    let result = upload_file_inner(
-        upload_path.to_string_lossy().to_string(),
-        query.folder_id,
-        None,
-        token,
-        None,
-        state.telegram.as_ref(),
+    let actor = match folder_actor_for_user(&state, &ctx.user_id).await {
+        Ok(actor) => actor,
+        Err(resp) => {
+            let _ = tokio::fs::remove_dir_all(&upload_dir).await;
+            return resp;
+        }
+    };
+    let job_payload = TelegramWriteJobPayload::UploadFile {
+        path: upload_path.to_string_lossy().to_string(),
+        folder_id: query.folder_id,
+        actor,
+    };
+    match enqueue_and_wait_telegram_write(
         &state,
-        None,
+        &ctx.user_id,
+        TelegramJobType::UploadFile,
+        &job_payload,
     )
-    .await;
-    let _ = tokio::fs::remove_dir_all(&upload_dir).await;
-
-    match result {
-        Ok(message) => HttpResponse::Ok().json(json!({ "message": message })),
-        Err(err) => HttpResponse::BadRequest().json(json!({ "error": err })),
+    .await
+    {
+        Ok(value) => HttpResponse::Ok().json(value),
+        Err(resp) => resp,
     }
 }
 
@@ -1557,21 +1829,29 @@ async fn delete_telegram_file(
     path: web::Path<i32>,
     query: web::Query<FilePathQuery>,
 ) -> impl Responder {
-    if let Err(resp) = authorize(&state, &req, false).await {
-        return resp;
-    }
-    let token = session_token_from_request(&state, &req);
-    match delete_file_inner(
-        path.into_inner(),
-        query.folder_id,
-        token,
-        state.telegram.as_ref(),
+    let ctx = match authorize(&state, &req, false).await {
+        Ok(ctx) => ctx,
+        Err(resp) => return resp,
+    };
+    let actor = match folder_actor_for_user(&state, &ctx.user_id).await {
+        Ok(actor) => actor,
+        Err(resp) => return resp,
+    };
+    let payload = TelegramWriteJobPayload::DeleteFile {
+        message_id: path.into_inner(),
+        folder_id: query.folder_id,
+        actor,
+    };
+    match enqueue_and_wait_telegram_write(
         &state,
+        &ctx.user_id,
+        TelegramJobType::DeleteFile,
+        &payload,
     )
     .await
     {
-        Ok(ok) => HttpResponse::Ok().json(json!({ "ok": ok })),
-        Err(err) => HttpResponse::BadRequest().json(json!({ "error": err })),
+        Ok(value) => HttpResponse::Ok().json(value),
+        Err(resp) => resp,
     }
 }
 
@@ -1581,22 +1861,30 @@ async fn move_telegram_files(
     req: HttpRequest,
     payload: web::Json<MoveCopyRequest>,
 ) -> impl Responder {
-    if let Err(resp) = authorize(&state, &req, false).await {
-        return resp;
-    }
-    let token = session_token_from_request(&state, &req);
-    match move_files_inner(
-        payload.message_ids.clone(),
-        payload.source_folder_id,
-        payload.target_folder_id,
-        token,
-        state.telegram.as_ref(),
+    let ctx = match authorize(&state, &req, false).await {
+        Ok(ctx) => ctx,
+        Err(resp) => return resp,
+    };
+    let actor = match folder_actor_for_user(&state, &ctx.user_id).await {
+        Ok(actor) => actor,
+        Err(resp) => return resp,
+    };
+    let payload = TelegramWriteJobPayload::MoveFiles {
+        message_ids: payload.message_ids.clone(),
+        source_folder_id: payload.source_folder_id,
+        target_folder_id: payload.target_folder_id,
+        actor,
+    };
+    match enqueue_and_wait_telegram_write(
         &state,
+        &ctx.user_id,
+        TelegramJobType::MoveFiles,
+        &payload,
     )
     .await
     {
-        Ok(ok) => HttpResponse::Ok().json(json!({ "ok": ok })),
-        Err(err) => HttpResponse::BadRequest().json(json!({ "error": err })),
+        Ok(value) => HttpResponse::Ok().json(value),
+        Err(resp) => resp,
     }
 }
 
@@ -1606,22 +1894,30 @@ async fn copy_telegram_files(
     req: HttpRequest,
     payload: web::Json<MoveCopyRequest>,
 ) -> impl Responder {
-    if let Err(resp) = authorize(&state, &req, false).await {
-        return resp;
-    }
-    let token = session_token_from_request(&state, &req);
-    match copy_files_inner(
-        payload.message_ids.clone(),
-        payload.source_folder_id,
-        payload.target_folder_id,
-        token,
-        state.telegram.as_ref(),
+    let ctx = match authorize(&state, &req, false).await {
+        Ok(ctx) => ctx,
+        Err(resp) => return resp,
+    };
+    let actor = match folder_actor_for_user(&state, &ctx.user_id).await {
+        Ok(actor) => actor,
+        Err(resp) => return resp,
+    };
+    let payload = TelegramWriteJobPayload::CopyFiles {
+        message_ids: payload.message_ids.clone(),
+        source_folder_id: payload.source_folder_id,
+        target_folder_id: payload.target_folder_id,
+        actor,
+    };
+    match enqueue_and_wait_telegram_write(
         &state,
+        &ctx.user_id,
+        TelegramJobType::CopyFiles,
+        &payload,
     )
     .await
     {
-        Ok(ok) => HttpResponse::Ok().json(json!({ "ok": ok })),
-        Err(err) => HttpResponse::BadRequest().json(json!({ "error": err })),
+        Ok(value) => HttpResponse::Ok().json(value),
+        Err(resp) => resp,
     }
 }
 
@@ -1794,6 +2090,327 @@ fn session_token_from_request(state: &NasState, req: &HttpRequest) -> Option<Str
         })
 }
 
+fn retry_after_response(message: &str, retry_after_seconds: i64) -> HttpResponse {
+    HttpResponse::TooManyRequests()
+        .append_header((header::RETRY_AFTER, retry_after_seconds.to_string()))
+        .json(json!({
+            "error": message,
+            "retry_after_seconds": retry_after_seconds,
+        }))
+}
+
+fn throttled_scope(scope: &str, retry_after_seconds: i64) -> HttpResponse {
+    retry_after_response(
+        &format!(
+            "Spam protection is active for {}. Please wait and try again.",
+            scope
+        ),
+        retry_after_seconds,
+    )
+}
+
+fn key_fragment(value: &str) -> String {
+    let sanitized: String = value
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | '@' | '+') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let trimmed = sanitized.trim_matches('_');
+    if trimmed.is_empty() {
+        "unknown".to_string()
+    } else {
+        trimmed.chars().take(96).collect()
+    }
+}
+
+async fn enforce_rate_limit(
+    state: &NasState,
+    key: String,
+    limit: usize,
+    window_seconds: i64,
+    scope: &str,
+) -> Result<(), HttpResponse> {
+    let decision = state.check_rate_limit(key, limit, window_seconds).await;
+    if decision.allowed {
+        Ok(())
+    } else {
+        Err(throttled_scope(scope, decision.retry_after_seconds))
+    }
+}
+
+async fn enforce_cooldown(state: &NasState, key: &str, scope: &str) -> Result<(), HttpResponse> {
+    let retry_after_seconds = state.cooldown_remaining(key).await;
+    if retry_after_seconds > 0 {
+        Err(throttled_scope(scope, retry_after_seconds))
+    } else {
+        Ok(())
+    }
+}
+
+async fn activate_cooldowns(state: &NasState, keys: &[String], seconds: i64) -> i64 {
+    let mut max_retry = 0;
+    for key in keys {
+        max_retry = max_retry.max(state.activate_cooldown(key.clone(), seconds).await);
+    }
+    max_retry
+}
+
+fn telegram_penalty_seconds(error: &str, minimum_seconds: i64) -> Option<i64> {
+    let upper = error.to_ascii_uppercase();
+    if let Some((_, suffix)) = upper.split_once("FLOOD_WAIT_") {
+        let digits: String = suffix
+            .chars()
+            .take_while(|ch| ch.is_ascii_digit())
+            .collect();
+        if let Ok(seconds) = digits.parse::<i64>() {
+            return Some((seconds + TELEGRAM_FLOOD_WAIT_BUFFER_SECONDS).max(minimum_seconds));
+        }
+        return Some((60 + TELEGRAM_FLOOD_WAIT_BUFFER_SECONDS).max(minimum_seconds));
+    }
+    if upper.contains("PEER_FLOOD")
+        || upper.contains("PHONE_NUMBER_FLOOD")
+        || upper.contains("PHONE_PASSWORD_FLOOD")
+        || upper.contains("PHONE_CODE_FLOOD")
+    {
+        return Some(TELEGRAM_SPAM_LOCKOUT_SECONDS.max(minimum_seconds));
+    }
+    None
+}
+
+fn owner_auth_keys(client_ip: &str, user_id: &str) -> Vec<String> {
+    vec![
+        "cooldown:owner-auth:global".to_string(),
+        format!("cooldown:owner-auth:ip:{}", key_fragment(client_ip)),
+        format!("cooldown:owner-auth:user:{}", key_fragment(user_id)),
+    ]
+}
+
+fn telegram_write_keys(client_ip: &str, user_id: &str) -> Vec<String> {
+    vec![
+        "cooldown:telegram-write:global".to_string(),
+        format!("cooldown:telegram-write:ip:{}", key_fragment(client_ip)),
+        format!("cooldown:telegram-write:user:{}", key_fragment(user_id)),
+    ]
+}
+
+async fn guard_login_attempt(
+    state: &NasState,
+    req: &HttpRequest,
+    username: &str,
+) -> Result<(), HttpResponse> {
+    let client_ip = client_ip(req);
+    let username_key = key_fragment(username);
+    enforce_cooldown(
+        state,
+        &format!("cooldown:login:ip:{}", key_fragment(&client_ip)),
+        "login attempts from this device",
+    )
+    .await?;
+    enforce_cooldown(
+        state,
+        &format!("cooldown:login:identifier:{}", username_key),
+        "login attempts for this account",
+    )
+    .await?;
+    enforce_rate_limit(
+        state,
+        format!("rate:login:ip:{}", key_fragment(&client_ip)),
+        LOGIN_IP_LIMIT,
+        LOGIN_IP_WINDOW_SECONDS,
+        "login attempts from this device",
+    )
+    .await?;
+    enforce_rate_limit(
+        state,
+        format!("rate:login:identifier:{}", username_key),
+        LOGIN_IDENTIFIER_LIMIT,
+        LOGIN_IDENTIFIER_WINDOW_SECONDS,
+        "login attempts for this account",
+    )
+    .await
+}
+
+async fn mark_login_failure(state: &NasState, req: &HttpRequest, username: &str) {
+    let client_ip = client_ip(req);
+    let keys = vec![
+        format!("cooldown:login:ip:{}", key_fragment(&client_ip)),
+        format!("cooldown:login:identifier:{}", key_fragment(username)),
+    ];
+    let _ = activate_cooldowns(state, &keys, LOGIN_FAILURE_COOLDOWN_SECONDS).await;
+}
+
+async fn guard_owner_code_request(
+    state: &NasState,
+    req: &HttpRequest,
+    user_id: &str,
+    phone: &str,
+) -> Result<(), HttpResponse> {
+    let client_ip = client_ip(req);
+    let phone_key = key_fragment(phone);
+    for key in owner_auth_keys(&client_ip, user_id) {
+        enforce_cooldown(state, &key, "owner Telegram authentication").await?;
+    }
+    enforce_cooldown(
+        state,
+        &format!("cooldown:owner-auth:phone:{}", phone_key),
+        "requesting another Telegram code for this phone",
+    )
+    .await?;
+    enforce_rate_limit(
+        state,
+        format!("rate:owner-auth:ip:{}", key_fragment(&client_ip)),
+        OWNER_AUTH_IP_LIMIT,
+        OWNER_AUTH_IP_WINDOW_SECONDS,
+        "owner Telegram authentication from this device",
+    )
+    .await?;
+    enforce_rate_limit(
+        state,
+        format!("rate:owner-auth:user:{}", key_fragment(user_id)),
+        OWNER_AUTH_USER_LIMIT,
+        OWNER_AUTH_USER_WINDOW_SECONDS,
+        "owner Telegram authentication for this admin",
+    )
+    .await?;
+    enforce_rate_limit(
+        state,
+        format!("rate:owner-auth:phone:{}", phone_key),
+        OWNER_CODE_PHONE_LIMIT,
+        OWNER_CODE_PHONE_WINDOW_SECONDS,
+        "Telegram code requests for this phone",
+    )
+    .await
+}
+
+async fn guard_owner_auth_attempt(
+    state: &NasState,
+    req: &HttpRequest,
+    user_id: &str,
+) -> Result<(), HttpResponse> {
+    let client_ip = client_ip(req);
+    for key in owner_auth_keys(&client_ip, user_id) {
+        enforce_cooldown(state, &key, "owner Telegram authentication").await?;
+    }
+    enforce_rate_limit(
+        state,
+        format!("rate:owner-auth:ip:{}", key_fragment(&client_ip)),
+        OWNER_AUTH_IP_LIMIT,
+        OWNER_AUTH_IP_WINDOW_SECONDS,
+        "owner Telegram authentication from this device",
+    )
+    .await?;
+    enforce_rate_limit(
+        state,
+        format!("rate:owner-auth:user:{}", key_fragment(user_id)),
+        OWNER_AUTH_USER_LIMIT,
+        OWNER_AUTH_USER_WINDOW_SECONDS,
+        "owner Telegram authentication for this admin",
+    )
+    .await
+}
+
+async fn owner_auth_error_response(
+    state: &NasState,
+    req: &HttpRequest,
+    user_id: &str,
+    phone: Option<&str>,
+    error: String,
+) -> HttpResponse {
+    if let Some(seconds) = telegram_penalty_seconds(&error, OWNER_AUTH_MIN_PENALTY_SECONDS) {
+        let client_ip = client_ip(req);
+        let mut keys = owner_auth_keys(&client_ip, user_id);
+        if let Some(phone) = phone {
+            keys.push(format!("cooldown:owner-auth:phone:{}", key_fragment(phone)));
+        }
+        let retry_after_seconds = activate_cooldowns(state, &keys, seconds).await;
+        return HttpResponse::TooManyRequests()
+            .append_header((header::RETRY_AFTER, retry_after_seconds.to_string()))
+            .json(json!({
+                "error": error,
+                "retry_after_seconds": retry_after_seconds,
+            }));
+    }
+    HttpResponse::BadRequest().json(json!({ "error": error }))
+}
+
+async fn mark_owner_code_success(state: &NasState, req: &HttpRequest, user_id: &str, phone: &str) {
+    let client_ip = client_ip(req);
+    let mut keys = owner_auth_keys(&client_ip, user_id);
+    let _ = activate_cooldowns(state, &keys, OWNER_AUTH_SUCCESS_COOLDOWN_SECONDS).await;
+    keys.clear();
+    keys.push(format!("cooldown:owner-auth:phone:{}", key_fragment(phone)));
+    let _ = activate_cooldowns(state, &keys, OWNER_CODE_SUCCESS_COOLDOWN_SECONDS).await;
+}
+
+async fn guard_telegram_write(
+    state: &NasState,
+    req: &HttpRequest,
+    user_id: &str,
+    _action: &str,
+) -> Result<(), HttpResponse> {
+    let client_ip = client_ip(req);
+    for key in telegram_write_keys(&client_ip, user_id) {
+        enforce_cooldown(state, &key, "Telegram write actions").await?;
+    }
+    enforce_rate_limit(
+        state,
+        format!("rate:telegram-write:ip:{}", key_fragment(&client_ip)),
+        TELEGRAM_WRITE_IP_LIMIT,
+        TELEGRAM_WRITE_IP_WINDOW_SECONDS,
+        "Telegram write actions from this device",
+    )
+    .await?;
+    enforce_rate_limit(
+        state,
+        format!("rate:telegram-write:user:{}", key_fragment(user_id)),
+        TELEGRAM_WRITE_USER_LIMIT,
+        TELEGRAM_WRITE_USER_WINDOW_SECONDS,
+        "Telegram write actions for this user",
+    )
+    .await?;
+    enforce_rate_limit(
+        state,
+        "rate:telegram-write:global".to_string(),
+        TELEGRAM_WRITE_GLOBAL_LIMIT,
+        TELEGRAM_WRITE_GLOBAL_WINDOW_SECONDS,
+        "Telegram write activity on this Pi",
+    )
+    .await
+}
+
+async fn telegram_write_error_response(
+    state: &NasState,
+    req: &HttpRequest,
+    user_id: &str,
+    error: String,
+) -> HttpResponse {
+    if let Some(seconds) = telegram_penalty_seconds(&error, TELEGRAM_WRITE_MIN_PENALTY_SECONDS) {
+        let client_ip = client_ip(req);
+        let keys = telegram_write_keys(&client_ip, user_id);
+        let retry_after_seconds = activate_cooldowns(state, &keys, seconds).await;
+        return HttpResponse::TooManyRequests()
+            .append_header((header::RETRY_AFTER, retry_after_seconds.to_string()))
+            .json(json!({
+                "error": error,
+                "retry_after_seconds": retry_after_seconds,
+            }));
+    }
+    HttpResponse::BadRequest().json(json!({ "error": error }))
+}
+
+async fn mark_telegram_write_success(state: &NasState, req: &HttpRequest, user_id: &str) {
+    let client_ip = client_ip(req);
+    let keys = telegram_write_keys(&client_ip, user_id);
+    let _ = activate_cooldowns(state, &keys, TELEGRAM_WRITE_SUCCESS_COOLDOWN_SECONDS).await;
+}
+
 fn safe_upload_name(name: &str) -> String {
     let sanitized = name
         .chars()
@@ -1816,8 +2433,15 @@ fn safe_upload_name(name: &str) -> String {
 fn client_ip(req: &HttpRequest) -> String {
     req.connection_info()
         .realip_remote_addr()
-        .unwrap_or("local")
-        .to_string()
+        .and_then(|value| {
+            value
+                .parse::<std::net::SocketAddr>()
+                .map(|addr| addr.ip().to_string())
+                .ok()
+                .or_else(|| value.split(',').next().map(|part| part.trim().to_string()))
+        })
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "local".to_string())
 }
 
 fn user_agent(req: &HttpRequest) -> String {

@@ -1,5 +1,5 @@
 use crate::bandwidth::BandwidthManager;
-use crate::commands::utils::{map_error, resolve_peer, resolve_peer_ref};
+use crate::commands::utils::{map_error, resolve_peer, resolve_peer_ref, resolve_read_peer};
 use crate::models::{FileMetadata, FolderMetadata};
 use crate::nas::crypto::hash_password;
 use crate::nas::models::{AccessLevel, AppRole, AppUser, ApprovalStatus, FolderRecordView};
@@ -34,7 +34,7 @@ pub struct FolderPasswordUpdate {
     pub remove_password: Option<bool>,
 }
 
-#[derive(Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FolderActor {
     pub user_id: String,
@@ -258,12 +258,24 @@ fn text_message_name(message_id: i32, text: &str) -> String {
 }
 
 fn strip_upload_temp_prefix(name: &str) -> String {
-    if name.len() <= 37 {
+    const PREFIX_LEN: usize = 36;
+    const FULL_PREFIX_LEN: usize = 37;
+
+    if name.len() <= FULL_PREFIX_LEN {
         return name.to_string();
     }
 
-    let prefix = &name[..36];
-    let separator = name.as_bytes()[36];
+    let bytes = name.as_bytes();
+    let Some(prefix_bytes) = bytes.get(..PREFIX_LEN) else {
+        return name.to_string();
+    };
+    let Some(&separator) = bytes.get(PREFIX_LEN) else {
+        return name.to_string();
+    };
+
+    let Ok(prefix) = std::str::from_utf8(prefix_bytes) else {
+        return name.to_string();
+    };
     let uuidish = prefix.chars().enumerate().all(|(idx, ch)| {
         if matches!(idx, 8 | 13 | 18 | 23) {
             ch == '-' || ch == '_'
@@ -273,7 +285,7 @@ fn strip_upload_temp_prefix(name: &str) -> String {
     });
 
     if uuidish && (separator == b'-' || separator == b'_') {
-        name[37..].to_string()
+        name.get(FULL_PREFIX_LEN..).unwrap_or(name).to_string()
     } else {
         name.to_string()
     }
@@ -458,7 +470,7 @@ pub async fn delete_folder_inner(
             channel: input_channel,
         })
         .await
-        .map_err(|e| format!("Failed to delete channel: {}", e))?;
+        .map_err(|e| format!("Failed to delete channel: {}", map_error(e)))?;
 
     nas_state
         .db
@@ -517,7 +529,7 @@ pub async fn rename_folder_inner(
                     title: format!("{} [TD]", trimmed),
                 })
                 .await
-                .map_err(|e| format!("Failed to rename folder: {}", e))?;
+                .map_err(|e| format!("Failed to rename folder: {}", map_error(e)))?;
         }
     }
 
@@ -673,6 +685,7 @@ pub async fn cmd_upload_file(
         state.inner(),
         nas_state.inner(),
         Some(bw_state.inner()),
+        None,
     )
     .await
 }
@@ -686,20 +699,11 @@ pub async fn upload_file_inner(
     state: &TelegramState,
     nas_state: &NasState,
     bw_state: Option<&BandwidthManager>,
+    actor: Option<FolderActor>,
 ) -> Result<String, String> {
-    if let Some(token) = access_token.filter(|value| !value.trim().is_empty()) {
-        match user_from_access_token(nas_state, Some(token)).await {
-            Ok(user) => {
-                ensure_can_manage_optional_folder(nas_state, &user, folder_id).await?;
-            }
-            Err(err) => {
-                log::warn!(
-                    "Upload permission check skipped because NAS session was not usable: {}",
-                    err
-                );
-            }
-        }
-    }
+    let user =
+        user_from_access_token_or_desktop_admin(nas_state, access_token.clone(), actor).await;
+    ensure_can_manage_optional_folder(nas_state, &user, folder_id).await?;
     let size = std::fs::metadata(&path).map_err(|e| e.to_string())?.len();
     if let Some(bw_state) = bw_state {
         bw_state.can_transfer(size)?;
@@ -948,6 +952,7 @@ pub async fn cmd_delete_file(
         access_token,
         state.inner(),
         nas_state.inner(),
+        None,
     )
     .await
 }
@@ -958,8 +963,9 @@ pub async fn delete_file_inner(
     access_token: Option<String>,
     state: &TelegramState,
     nas_state: &NasState,
+    actor: Option<FolderActor>,
 ) -> Result<bool, String> {
-    let user = user_from_access_token_or_desktop_admin(nas_state, access_token, None).await;
+    let user = user_from_access_token_or_desktop_admin(nas_state, access_token, actor).await;
     ensure_can_manage_optional_folder(nas_state, &user, folder_id).await?;
     let client_opt = { state.client.lock().await.clone() };
     if client_opt.is_none() {
@@ -976,7 +982,7 @@ pub async fn delete_file_inner(
     client
         .delete_messages(peer, &[message_id])
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(map_error)?;
     Ok(true)
 }
 
@@ -1006,8 +1012,14 @@ pub async fn cmd_download_file(
         return Ok("Download successful".to_string());
     }
     let client = client_opt.unwrap();
-
-    let peer = resolve_peer_ref(&client, folder_id, &state.peer_cache).await?;
+    let _read_permit = state
+        .read_gate
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| "Telegram read limiter is unavailable".to_string())?;
+    let resolved_peer = resolve_read_peer(&client, folder_id, &state.peer_cache).await?;
+    let peer = resolved_peer.peer_ref;
 
     if message_id == TEXT_MESSAGES_FILE_ID {
         let mut text_messages = Vec::new();
@@ -1048,11 +1060,10 @@ pub async fn cmd_download_file(
     }
 
     // Use get_messages_by_id for efficient message lookup (same as server.rs)
-    let peer = resolve_peer_ref(&client, folder_id, &state.peer_cache).await?;
     let messages = client
         .get_messages_by_id(peer, &[message_id])
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(map_error)?;
 
     let msg = messages
         .into_iter()
@@ -1162,6 +1173,7 @@ pub async fn cmd_move_files(
         access_token,
         state.inner(),
         nas_state.inner(),
+        None,
     )
     .await
 }
@@ -1173,8 +1185,9 @@ pub async fn move_files_inner(
     access_token: Option<String>,
     state: &TelegramState,
     nas_state: &NasState,
+    actor: Option<FolderActor>,
 ) -> Result<bool, String> {
-    let user = user_from_access_token_or_desktop_admin(nas_state, access_token, None).await;
+    let user = user_from_access_token_or_desktop_admin(nas_state, access_token, actor).await;
     ensure_can_manage_optional_folder(nas_state, &user, source_folder_id).await?;
     ensure_can_manage_optional_folder(nas_state, &user, target_folder_id).await?;
     if source_folder_id == target_folder_id {
@@ -1200,13 +1213,13 @@ pub async fn move_files_inner(
         .await
     {
         Ok(_) => {}
-        Err(e) => return Err(format!("Forward failed: {}", e)),
+        Err(e) => return Err(format!("Forward failed: {}", map_error(e))),
     }
 
     let source_peer = resolve_peer_ref(&client, source_folder_id, &state.peer_cache).await?;
     match client.delete_messages(source_peer, &message_ids).await {
         Ok(_) => {}
-        Err(e) => return Err(format!("Delete original failed: {}", e)),
+        Err(e) => return Err(format!("Delete original failed: {}", map_error(e))),
     }
 
     Ok(true)
@@ -1228,6 +1241,7 @@ pub async fn cmd_copy_files(
         access_token,
         state.inner(),
         nas_state.inner(),
+        None,
     )
     .await
 }
@@ -1239,8 +1253,9 @@ pub async fn copy_files_inner(
     access_token: Option<String>,
     state: &TelegramState,
     nas_state: &NasState,
+    actor: Option<FolderActor>,
 ) -> Result<bool, String> {
-    let user = user_from_access_token_or_desktop_admin(nas_state, access_token, None).await;
+    let user = user_from_access_token_or_desktop_admin(nas_state, access_token, actor).await;
     ensure_can_write_optional_folder(nas_state, &user, target_folder_id).await?;
     if source_folder_id == target_folder_id {
         return Ok(true);
@@ -1265,7 +1280,7 @@ pub async fn copy_files_inner(
         .await
     {
         Ok(_) => {}
-        Err(e) => return Err(format!("Copy failed: {}", e)),
+        Err(e) => return Err(format!("Copy failed: {}", map_error(e))),
     }
 
     Ok(true)
@@ -1283,57 +1298,105 @@ pub async fn get_files_inner(
     folder_id: Option<i64>,
     state: &TelegramState,
 ) -> Result<Vec<FileMetadata>, String> {
+    let is_saved_messages = folder_id.is_none();
+    log::info!(
+        "[list-files] Starting Telegram file listing for folder_id={:?} saved_messages={}",
+        folder_id,
+        is_saved_messages
+    );
     let client_opt = { state.client.lock().await.clone() };
     if client_opt.is_none() {
         log::info!("[MOCK] Returning mock files for folder {:?}", folder_id);
         return Ok(Vec::new()); // No mock files for now
     }
     let client = client_opt.unwrap();
+    let _read_permit = state
+        .read_gate
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| "Telegram read limiter is unavailable".to_string())?;
     let mut files = Vec::new();
-
-    let peer = resolve_peer_ref(&client, folder_id, &state.peer_cache).await?;
+    let resolved_peer = resolve_read_peer(&client, folder_id, &state.peer_cache).await?;
+    log::info!(
+        "[list-files] Resolved Telegram peer: requested_folder_id={:?} saved_messages={} peer_kind={} peer_id={:?} api_call=iter_messages",
+        folder_id,
+        resolved_peer.is_saved_messages,
+        resolved_peer.peer_kind,
+        resolved_peer.peer_id
+    );
+    let peer = resolved_peer.peer_ref;
 
     let mut msgs = client.iter_messages(peer);
     let mut text_messages = Vec::new();
-    while let Some(msg) = msgs.next().await.map_err(|e| e.to_string())? {
-        if let Some(doc) = msg.media() {
-            let (name, size, mime, ext) = match doc {
-                Media::Document(d) => {
-                    let n = strip_upload_temp_prefix(&d.name().to_string());
-                    let s = d.size();
-                    let m = d.mime_type().map(|s| s.to_string());
-                    let e = std::path::Path::new(&n)
-                        .extension()
-                        .map(|os| os.to_str().unwrap_or("").to_string());
-                    (n, s, m, e)
+    while let Some(msg) = msgs.next().await.map_err(map_error)? {
+        let message_id = msg.id();
+        let created_at = msg.date().to_string();
+        let processed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let Some(doc) = msg.media() {
+                let (name, size, mime, ext) = match doc {
+                    Media::Document(d) => {
+                        let n = strip_upload_temp_prefix(&d.name().to_string());
+                        let s = d.size();
+                        let m = d.mime_type().map(|s| s.to_string());
+                        let e = std::path::Path::new(&n)
+                            .extension()
+                            .map(|os| os.to_str().unwrap_or("").to_string());
+                        (n, s, m, e)
+                    }
+                    Media::Photo(_) => (
+                        "Photo.jpg".to_string(),
+                        0,
+                        Some("image/jpeg".into()),
+                        Some("jpg".into()),
+                    ),
+                    _ => ("Unknown".to_string(), 0, None, None),
+                };
+                (
+                    Some(FileMetadata {
+                        id: message_id as i64,
+                        folder_id,
+                        name,
+                        size: size as u64,
+                        mime_type: mime,
+                        file_ext: ext,
+                        created_at: created_at.clone(),
+                        icon_type: "file".into(),
+                        text_content: None,
+                    }),
+                    None,
+                )
+            } else {
+                let text = msg.text().trim();
+                if text.is_empty() {
+                    (None, None)
+                } else {
+                    (
+                        None,
+                        Some(TextMessageEntry {
+                            id: message_id,
+                            date: created_at.clone(),
+                            text: text.to_string(),
+                        }),
+                    )
                 }
-                Media::Photo(_) => (
-                    "Photo.jpg".to_string(),
-                    0,
-                    Some("image/jpeg".into()),
-                    Some("jpg".into()),
-                ),
-                _ => ("Unknown".to_string(), 0, None, None),
-            };
-            files.push(FileMetadata {
-                id: msg.id() as i64,
-                folder_id,
-                name,
-                size: size as u64,
-                mime_type: mime,
-                file_ext: ext,
-                created_at: msg.date().to_string(),
-                icon_type: "file".into(),
-                text_content: None,
-            });
-        } else {
-            let text = msg.text().trim();
-            if !text.is_empty() {
-                text_messages.push(TextMessageEntry {
-                    id: msg.id(),
-                    date: msg.date().to_string(),
-                    text: text.to_string(),
-                });
+            }
+        }));
+
+        match processed {
+            Ok((Some(file), None)) => files.push(file),
+            Ok((None, Some(text_entry))) => text_messages.push(text_entry),
+            Ok((None, None)) => {}
+            Ok((Some(file), Some(text_entry))) => {
+                files.push(file);
+                text_messages.push(text_entry);
+            }
+            Err(_) => {
+                log::warn!(
+                    "[list-files] Skipping message {} in folder_id={:?} after metadata extraction panic",
+                    message_id,
+                    folder_id
+                );
             }
         }
     }
@@ -1358,6 +1421,13 @@ pub async fn get_files_inner(
         });
     }
 
+    log::info!(
+        "[list-files] Completed Telegram file listing for folder_id={:?} saved_messages={} files={} grouped_text_messages={}",
+        folder_id,
+        is_saved_messages,
+        files.len(),
+        !text_messages.is_empty()
+    );
     Ok(files)
 }
 
@@ -1373,6 +1443,12 @@ pub async fn search_global_inner(
     query: String,
     state: &TelegramState,
 ) -> Result<Vec<FileMetadata>, String> {
+    let _read_permit = state
+        .read_gate
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| "Telegram read limiter is unavailable".to_string())?;
     let client_opt = { state.client.lock().await.clone() };
     if client_opt.is_none() {
         return Ok(Vec::new());

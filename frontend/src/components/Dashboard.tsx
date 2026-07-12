@@ -7,7 +7,7 @@ import { Shield } from 'lucide-react';
 
 import type { TelegramFile, BandwidthStats, TelegramFolder } from '@shared/telegram';
 import type { AppUser, PermissionAssignment } from '@shared/nas';
-import { formatBytes, isMediaFile, isPdfFile } from '../utils';
+import { formatBytes, isAudioFile, isPdfFile, isVideoFile } from '../utils';
 
 // Components
 import { Sidebar } from './dashboard/Sidebar';
@@ -32,6 +32,7 @@ import { useFileUpload } from '../hooks/useFileUpload';
 import { useFileDownload } from '../hooks/useFileDownload';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 import { nasApi } from '../lib/nasApi';
+import { useAudioPlayer } from '../context/AudioPlayerContext';
 
 interface DashboardProps {
     onLogout: () => void;
@@ -50,6 +51,7 @@ const isRootPermission = (folderId: string) => {
 
 export function Dashboard({ onLogout, permissions, allowFolderManagement = true, adminControls, currentUser }: DashboardProps) {
     const queryClient = useQueryClient();
+    const audioPlayer = useAudioPlayer();
 
 
     const {
@@ -163,6 +165,7 @@ export function Dashboard({ onLogout, permissions, allowFolderManagement = true,
     const [unlockedFolders, setUnlockedFolders] = useState<Set<number>>(() => new Set());
     const [previewContextFiles, setPreviewContextFiles] = useState<TelegramFile[]>([]);
     const [previewContextIndex, setPreviewContextIndex] = useState(-1);
+    const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
 
     useEffect(() => {
         if (store) {
@@ -205,6 +208,7 @@ export function Dashboard({ onLogout, permissions, allowFolderManagement = true,
             type: f.type || (f.name.endsWith('/') ? 'folder' : 'file')
         }))),
         enabled: !!store && hasFolderAccess && activeFolderAllowed && !activeFolderNeedsUnlock,
+        retry: false,
     });
 
     const displayedFiles = searchTerm.length > 2
@@ -316,6 +320,12 @@ export function Dashboard({ onLogout, permissions, allowFolderManagement = true,
         if (e.metaKey || e.ctrlKey) {
             setSelectedIds(ids => ids.includes(id) ? ids.filter(i => i !== id) : [...ids, id]);
         } else {
+            const file = displayedFiles.find(item => item.id === id);
+            if (file && file.type !== 'folder' && isAudioFile(file.name, file.mime_type)) {
+                setSelectedIds([id]);
+                handlePreview(file, displayedFiles);
+                return;
+            }
             setSelectedIds([id]);
         }
     }
@@ -325,16 +335,24 @@ export function Dashboard({ onLogout, permissions, allowFolderManagement = true,
     }, []);
 
     const handlePreview = (file: TelegramFile, orderedFiles?: TelegramFile[]) => {
-        const contextFiles = (orderedFiles || displayedFiles).filter((f) => f.type !== 'folder');
+        if (isAudioFile(file.name, file.mime_type)) {
+            audioPlayer.playTrack(file, orderedFiles || displayedFiles, activeFolderId);
+            setPreviewFile(null);
+            setPlayingFile(null);
+            setPdfFile(null);
+            return;
+        }
+
+        const contextFiles = (orderedFiles || displayedFiles).filter((f) => f.type !== 'folder' && !isAudioFile(f.name, f.mime_type));
         const contextIndex = contextFiles.findIndex((f) => f.id === file.id);
 
         setPreviewContextFiles(contextFiles);
         setPreviewContextIndex(contextIndex);
 
-        const isMedia = isMediaFile(file.name);
+        const isVideo = isVideoFile(file.name);
         const isPdf = isPdfFile(file.name);
 
-        if (isMedia) {
+        if (isVideo) {
             setPlayingFile(file);
             setPreviewFile(null);
             setPdfFile(null);
@@ -364,10 +382,10 @@ export function Dashboard({ onLogout, permissions, allowFolderManagement = true,
 
         setPreviewContextIndex(nextIndex);
 
-        const isMedia = isMediaFile(nextFile.name);
+        const isVideo = isVideoFile(nextFile.name);
         const isPdf = isPdfFile(nextFile.name);
 
-        if (isMedia) {
+        if (isVideo) {
             setPlayingFile(nextFile);
             setPreviewFile(null);
             setPdfFile(null);
@@ -477,6 +495,7 @@ export function Dashboard({ onLogout, permissions, allowFolderManagement = true,
 
     const selectFolder = (folderId: number | null) => {
         if (folderId === null) {
+            setIsMobileSidebarOpen(false);
             setActiveFolderId(null);
             return;
         }
@@ -487,6 +506,7 @@ export function Dashboard({ onLogout, permissions, allowFolderManagement = true,
             setFolderUnlock(folder);
             return;
         }
+        setIsMobileSidebarOpen(false);
         setActiveFolderId(folderId);
     };
 
@@ -588,6 +608,8 @@ export function Dashboard({ onLogout, permissions, allowFolderManagement = true,
                 folders={visibleFolders}
                 activeFolderId={activeFolderId}
                 setActiveFolderId={selectFolder}
+                mobileOpen={isMobileSidebarOpen}
+                onCloseMobile={() => setIsMobileSidebarOpen(false)}
                 onDrop={handleDropOnFolder}
                 onDelete={handleFolderDelete}
                 onRename={(id) => {
@@ -614,10 +636,11 @@ export function Dashboard({ onLogout, permissions, allowFolderManagement = true,
                 showSync={Boolean(currentUser)}
             />
 
-            <main className="flex-1 flex flex-col" onClick={(e) => { if (e.target === e.currentTarget) setSelectedIds([]); }}>
+            <main className="flex min-w-0 flex-1 flex-col" onClick={(e) => { if (e.target === e.currentTarget) setSelectedIds([]); }}>
                 <TopBar
                     currentFolderName={currentFolderName}
                     selectedIds={selectedIds}
+                    onOpenSidebar={() => setIsMobileSidebarOpen(true)}
                     onShowMoveModal={() => setFolderTransferMode('move')}
                     onShowCopyModal={() => setFolderTransferMode('copy')}
                     onBulkDownload={handleBulkDownload}
@@ -646,7 +669,7 @@ export function Dashboard({ onLogout, permissions, allowFolderManagement = true,
                     )}
                 />
                 {searchTerm.length > 2 && (
-                    <div className="px-6 pt-4 pb-0">
+                    <div className="px-3 pt-3 pb-0 sm:px-6 sm:pt-4">
                         <h2 className="text-sm font-medium text-telegram-subtext">
                             Search Results for <span className="text-telegram-primary">"{searchTerm}"</span>
                         </h2>

@@ -643,7 +643,7 @@ pub async fn sign_in_inner(state: &TelegramState, code: String) -> Result<AuthRe
         }
         Err(e) => {
             log::error!("Sign in error: {}", e);
-            Err(format!("Sign in failed: {}", e))
+            Err(format!("Sign in failed: {}", map_error(e)))
         }
     }
 }
@@ -688,7 +688,7 @@ pub async fn check_password_inner(
                 Err(format!("Telegram login verification failed: {}", err))
             }
         },
-        Err(e) => Err(format!("2FA Failed: {}", e)),
+        Err(e) => Err(format!("2FA Failed: {}", map_error(e))),
     }
 }
 

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { X, ChevronLeft, ChevronRight } from 'lucide-react';
 import type { TelegramFile } from '@shared/telegram';
-import { isVideoFile, isAudioFile } from '../../utils';
+import { isVideoFile } from '../../utils';
 import { nasApi } from '../../lib/nasApi';
 
 interface MediaPlayerProps {
@@ -21,7 +21,6 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
     const [retryNonce, setRetryNonce] = useState(0);
 
     const isVideo = isVideoFile(file.name);
-    const isAudio = isAudioFile(file.name);
 
     useEffect(() => {
         setLoading(true);
@@ -125,24 +124,6 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
                                 </div>
                             )}
                         </>
-                    ) : isAudio ? (
-                        <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-telegram-primary/20 to-black">
-                            <div className="w-32 h-32 rounded-full bg-telegram-surface flex items-center justify-center mb-8 shadow-xl animate-pulse-slow">
-                                <svg xmlns="http://www.w3.org/2000/svg" className="w-12 h-12 text-telegram-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></svg>
-                            </div>
-                            <audio
-                                key={mediaUrl}
-                                src={mediaUrl}
-                                controls
-                                autoPlay
-                                preload="auto"
-                                onLoadedMetadata={markReady}
-                                onCanPlay={markReady}
-                                onError={markError}
-                                className="w-full max-w-md"
-                            />
-                            {error && <p className="mt-4 text-sm text-red-200">{error}</p>}
-                        </div>
                     ) : (
                         <div className="text-white">Unsupported media type</div>
                     )}
@@ -153,7 +134,7 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
                     <p className="text-sm text-white/50">
                         Streaming from Telegram Drive
                         {typeof currentIndex === 'number' && typeof totalItems === 'number' && totalItems > 0 && (
-                            <span className="ml-2">• {currentIndex + 1}/{totalItems}</span>
+                            <span className="ml-2">- {currentIndex + 1}/{totalItems}</span>
                         )}
                     </p>
                 </div>

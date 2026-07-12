@@ -77,7 +77,7 @@ fn api_base_url(host: &str, port: u16) -> String {
 fn use_external_backend() -> bool {
     std::env::var("TELEGRAM_DRIVE_EXTERNAL_BACKEND")
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-        .unwrap_or(false)
+        .unwrap_or(cfg!(mobile) || !cfg!(debug_assertions))
 }
 
 fn configured_data_dir(default_dir: std::path::PathBuf) -> std::path::PathBuf {
@@ -153,6 +153,7 @@ pub fn new_telegram_state() -> TelegramState {
         runner_shutdown: Arc::new(std::sync::Mutex::new(None)),
         runner_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         peer_cache: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+        read_gate: Arc::new(tokio::sync::Semaphore::new(4)),
     }
 }
 
@@ -189,15 +190,22 @@ pub fn run() {
     let startup_error_state = StartupErrorState(Arc::new(std::sync::Mutex::new(None)));
     let startup_error_for_setup = startup_error_state.clone();
 
-    let app = tauri::Builder::default()
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(tauri_plugin_process::init());
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        builder = builder.plugin(tauri_plugin_window_state::Builder::default().build());
+    }
+
+    let app = builder
         .setup(move |app| {
             app.manage(startup_error_for_setup.clone());
             let telegram_state = new_telegram_state();
@@ -212,6 +220,11 @@ pub fn run() {
                 port: api_port,
             });
             app.manage(ActixServerHandle(server_handle_for_setup.clone()));
+
+            if use_external_backend() {
+                log::info!("Using external API; skipping embedded backend startup.");
+                return Ok(());
+            }
 
             let app_data_dir =
                 configured_data_dir(app.path().app_data_dir().map_err(|err| err.to_string())?);
@@ -237,6 +250,7 @@ pub fn run() {
             };
             tauri::async_runtime::block_on(seed_owner_config_from_env(&nas_state))?;
             app.manage(nas_state.clone());
+            nas::telegram_queue::start_telegram_job_worker(nas_state.clone());
 
             let nas_state_for_reconnect = nas_state.clone();
             tauri::async_runtime::spawn(async move {
@@ -269,12 +283,6 @@ pub fn run() {
                     Err(_) => log::warn!("Owner Telegram client preload timed out."),
                 }
             });
-
-            if use_external_backend() {
-                log::info!(
-                    "Using external backend API for frontend requests; keeping local Actix helper server enabled for media previews."
-                );
-            }
 
             // Start Streaming Server on dedicated thread (Actix needs its own runtime)
             let nas_state_for_server = nas_state.clone();
