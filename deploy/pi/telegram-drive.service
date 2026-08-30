@@ -1,0 +1,26 @@
+[Unit]
+Description=Telegram Drive Rust API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=telegram-drive
+Group=telegram-drive
+WorkingDirectory=/opt/telegram-drive/backend
+EnvironmentFile=/opt/telegram-drive/backend/.env
+Environment=RUST_LOG=info
+ExecStart=/opt/telegram-drive/backend/target/release/telegram-drive-backend
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+# Basic hardening while keeping the local data directory writable.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/telegram-drive/backend/.data
+
+[Install]
+WantedBy=multi-user.target
