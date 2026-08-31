@@ -8,6 +8,7 @@
     "stop": "node scripts/kill-port.mjs 1420",
     "tauri": "node scripts/tauri.mjs",
     "build": "tsc && vite build",
+    "build:web": "tsc && vite build --mode web",
     "preview": "vite preview"
   },
   "dependencies": {
