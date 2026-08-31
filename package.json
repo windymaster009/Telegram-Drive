@@ -14,7 +14,7 @@
     "dev:backend": "npm --prefix backend run dev",
     "dev:api": "npm --prefix backend run api",
     "build": "npm run build:frontend && npm run build:backend",
-    "build:web": "npm run build:frontend",
+    "build:web": "npm --prefix frontend run build:web",
     "build:api": "cargo build --release --manifest-path backend/Cargo.toml",
     "build:pi": "npm run build:web && npm run build:api",
     "start:api": "cargo run --release --manifest-path backend/Cargo.toml",
