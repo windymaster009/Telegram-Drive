@@ -1,39 +1,61 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
+
+const isTauriRuntime = () =>
+    typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
 /**
- * Network detection for Tauri apps using lightweight backend check
- * 
- * Uses cmd_is_network_available which does a simple TCP connection test
- * to Telegram servers without using grammers (avoids stack overflow).
- * 
- * Polls every 10 seconds - very lightweight (~2ms per check).
+ * Reports whether the client has usable network access.
+ *
+ * Desktop/Tauri uses the lightweight Rust Telegram reachability command.
+ * Browser/Web uses the browser's online state so a missing Tauri runtime does
+ * not incorrectly mark the NAS connection as offline.
  */
 export function useNetworkStatus() {
-    const [isOnline, setIsOnline] = useState(true);
+    const [isOnline, setIsOnline] = useState(() =>
+        typeof navigator === 'undefined' ? true : navigator.onLine
+    );
 
     useEffect(() => {
-        // Import Tauri invoke
-        import('@tauri-apps/api/core').then(({ invoke }) => {
-            // Check network status
-            const checkNetwork = async () => {
-                try {
-                    // Use the lightweight TCP check (no grammers involved)
-                    const available = await invoke<boolean>('cmd_is_network_available');
-                    setIsOnline(available);
-                } catch (error) {
-                    // If the command fails, assume offline
-                    setIsOnline(false);
-                }
+        if (!isTauriRuntime()) {
+            const updateBrowserStatus = () => setIsOnline(navigator.onLine);
+            updateBrowserStatus();
+            window.addEventListener('online', updateBrowserStatus);
+            window.addEventListener('offline', updateBrowserStatus);
+
+            return () => {
+                window.removeEventListener('online', updateBrowserStatus);
+                window.removeEventListener('offline', updateBrowserStatus);
             };
+        }
 
-            // Initial check
-            checkNetwork();
+        let cancelled = false;
+        let interval: number | undefined;
 
-            // Poll every 10 seconds (very lightweight, ~2ms per check)
-            const interval = setInterval(checkNetwork, 10000);
+        const startDesktopPolling = async () => {
+            try {
+                const { invoke } = await import('@tauri-apps/api/core');
+                const checkNetwork = async () => {
+                    try {
+                        const available = await invoke<boolean>('cmd_is_network_available');
+                        if (!cancelled) setIsOnline(available);
+                    } catch {
+                        if (!cancelled) setIsOnline(false);
+                    }
+                };
 
-            return () => clearInterval(interval);
-        });
+                await checkNetwork();
+                interval = window.setInterval(checkNetwork, 10_000);
+            } catch {
+                if (!cancelled) setIsOnline(false);
+            }
+        };
+
+        startDesktopPolling();
+
+        return () => {
+            cancelled = true;
+            if (interval !== undefined) window.clearInterval(interval);
+        };
     }, []);
 
     return isOnline;
