@@ -17,7 +17,15 @@ function webRuntimePlugin(enabled: boolean): Plugin {
         if (!code.includes(desktopOnlyGate)) {
           throw new Error("Telegram Drive web build could not locate the desktop-only app gate");
         }
-        return code.replace(desktopOnlyGate, `      ) : googleLoading ? (`);
+
+        const desktopFolderCatalog = `    queryFn: async () => {\n      const storedFolders = await loadStoredTelegramFolders();\n\n      try {\n        await invoke<boolean>("cmd_check_connection");\n        const scannedFolders = await invoke<TelegramFolder[]>("cmd_scan_folders", {\n          accessToken: nasSession.getAccessToken(),\n          actor: {\n            userId: me.user.id,\n            displayName: me.user.display_name,\n            email: me.user.email || me.user.username,\n            role: me.user.role,\n          },\n        });\n        return mergeTelegramFolders(storedFolders, scannedFolders);\n      } catch {\n        return storedFolders;\n      }\n    },`;
+        if (!code.includes(desktopFolderCatalog)) {
+          throw new Error("Telegram Drive web build could not locate the desktop folder catalog loader");
+        }
+
+        return code
+          .replace(desktopOnlyGate, `      ) : googleLoading ? (`)
+          .replace(desktopFolderCatalog, `    queryFn: () => nasApi.scanTelegramFolders(),`);
       }
 
       if (id.endsWith("/src/lib/nasApi.ts")) {
