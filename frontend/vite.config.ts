@@ -23,13 +23,15 @@ function webRuntimePlugin(enabled: boolean): Plugin {
           throw new Error("Telegram Drive web build could not locate the desktop folder catalog loader");
         }
 
+        const webFolderCatalog = `    queryFn: async () => {\n      let storedFolders: TelegramFolder[] = [];\n      try {\n        const raw = window.localStorage.getItem("telegram-drive:folders");\n        const parsed = raw ? JSON.parse(raw) : [];\n        if (Array.isArray(parsed)) {\n          storedFolders = parsed\n            .filter((folder) => folder && Number.isFinite(Number(folder.id)))\n            .map((folder) => ({ ...folder, id: Number(folder.id) }));\n        }\n      } catch {\n        storedFolders = [];\n      }\n\n      try {\n        const scannedFolders = await nasApi.scanTelegramFolders();\n        return mergeTelegramFolders(storedFolders, scannedFolders);\n      } catch {\n        return storedFolders;\n      }\n    },`;
+
         return code
           .replace(desktopOnlyGate, `      ) : googleLoading ? (`)
-          .replace(desktopFolderCatalog, `    queryFn: () => nasApi.scanTelegramFolders(),`);
+          .replace(desktopFolderCatalog, webFolderCatalog);
       }
 
       if (id.endsWith("/src/lib/nasApi.ts")) {
-        const desktopFallback = `  const currentHost = window.location.hostname;\n  const host =\n    !currentHost || currentHost === \"tauri.localhost\" || currentHost === \"localhost\"\n      ? \"localhost\"\n      : currentHost;\n  return \`http://\${host}:14201\`;`;
+        const desktopFallback = `  const currentHost = window.location.hostname;\n  const host =\n    !currentHost || currentHost === "tauri.localhost" || currentHost === "localhost"\n      ? "localhost"\n      : currentHost;\n  return \`http://\${host}:14201\`;`;
         if (!code.includes(desktopFallback)) {
           throw new Error("Telegram Drive web build could not locate the desktop API fallback");
         }
