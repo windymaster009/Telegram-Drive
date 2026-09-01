@@ -39,6 +39,11 @@ export default defineConfig(async ({ mode }) => {
 
   return {
     plugins: [webRuntimePlugin(webMode), react()],
+    // The XLSX viewer uses a code-split Web Worker. Vite defaults workers to
+    // IIFE output, which Rollup cannot use once that worker has multiple chunks.
+    worker: {
+      format: "es",
+    },
     resolve: {
       alias: {
         "@shared": fileURLToPath(new URL("../shared/src", import.meta.url)),
