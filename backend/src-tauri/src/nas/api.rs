@@ -45,7 +45,6 @@ const OWNER_AUTH_USER_WINDOW_SECONDS: i64 = 10 * 60;
 const OWNER_CODE_PHONE_LIMIT: usize = 3;
 const OWNER_CODE_PHONE_WINDOW_SECONDS: i64 = 30 * 60;
 const OWNER_CODE_SUCCESS_COOLDOWN_SECONDS: i64 = 90;
-const OWNER_AUTH_SUCCESS_COOLDOWN_SECONDS: i64 = 15;
 const OWNER_AUTH_MIN_PENALTY_SECONDS: i64 = 5 * 60;
 const TELEGRAM_WRITE_IP_LIMIT: usize = 40;
 const TELEGRAM_WRITE_IP_WINDOW_SECONDS: i64 = 10 * 60;
@@ -1285,6 +1284,25 @@ async fn get_owner_status(state: web::Data<NasState>, req: HttpRequest) -> impl 
         return resp;
     }
 
+    // While a Telegram login or 2FA flow is active, do not run the normal
+    // reconnect/status path. That path is allowed to tear down an unauthorized
+    // runtime client, which would also destroy the login/password token that
+    // the next auth step needs.
+    let auth_in_progress = {
+        let login_pending = state.telegram.login_token.lock().await.is_some();
+        let password_pending = state.telegram.password_token.lock().await.is_some();
+        login_pending || password_pending
+    };
+    if auth_in_progress {
+        return HttpResponse::Ok().json(json!({
+            "configured": true,
+            "connected": false,
+            "api_id": serde_json::Value::Null,
+            "error": serde_json::Value::Null,
+            "auth_in_progress": true,
+        }));
+    }
+
     match owner_session_status_inner(&state).await {
         Ok(status) => HttpResponse::Ok().json(status),
         Err(err) => HttpResponse::InternalServerError().json(json!({ "error": err })),
@@ -2102,8 +2120,8 @@ fn retry_after_response(message: &str, retry_after_seconds: i64) -> HttpResponse
 fn throttled_scope(scope: &str, retry_after_seconds: i64) -> HttpResponse {
     retry_after_response(
         &format!(
-            "Spam protection is active for {}. Please wait and try again.",
-            scope
+            "Spam protection is active for {}. Please wait {} seconds and try again.",
+            scope, retry_after_seconds
         ),
         retry_after_seconds,
     )
@@ -2340,12 +2358,18 @@ async fn owner_auth_error_response(
     HttpResponse::BadRequest().json(json!({ "error": error }))
 }
 
-async fn mark_owner_code_success(state: &NasState, req: &HttpRequest, user_id: &str, phone: &str) {
-    let client_ip = client_ip(req);
-    let mut keys = owner_auth_keys(&client_ip, user_id);
-    let _ = activate_cooldowns(state, &keys, OWNER_AUTH_SUCCESS_COOLDOWN_SECONDS).await;
-    keys.clear();
-    keys.push(format!("cooldown:owner-auth:phone:{}", key_fragment(phone)));
+async fn mark_owner_code_success(
+    state: &NasState,
+    _req: &HttpRequest,
+    _user_id: &str,
+    phone: &str,
+) {
+    // A successful code request should only prevent requesting another code
+    // immediately. Verification and 2FA must remain available right away.
+    let keys = vec![format!(
+        "cooldown:owner-auth:phone:{}",
+        key_fragment(phone)
+    )];
     let _ = activate_cooldowns(state, &keys, OWNER_CODE_SUCCESS_COOLDOWN_SECONDS).await;
 }
 
