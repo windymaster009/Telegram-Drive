@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-shell";
 import { Store } from "@tauri-apps/plugin-store";
 import { QRCodeSVG } from "qrcode.react";
-import { Chrome, Copy, Shield, UserPlus, Users, History, KeyRound, ScanQrCode, HardDrive, LogOut, ChevronDown, Skull, X } from "lucide-react";
+import { Chrome, Copy, Shield, UserPlus, Users, History, KeyRound, ScanQrCode, HardDrive, LogOut, ChevronDown, Skull, X, LayoutDashboard, Search, Menu, Activity, FolderOpen, ArrowRight, RefreshCw, Monitor, Smartphone, CheckCircle2, AlertTriangle, Database, Wifi, UserRound, FileClock } from "lucide-react";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Dashboard } from "./components/Dashboard";
 import { UpdateBanner } from "./components/UpdateBanner";
@@ -17,7 +17,6 @@ import { DropZoneProvider } from "./contexts/DropZoneContext";
 import { AudioPlayer } from "./components/audio/AudioPlayer";
 import { Toaster, toast } from "sonner";
 import type {
-  AppSession,
   AppUser,
   AuditEntry,
   MeResponse,
@@ -715,7 +714,8 @@ function AdminConsole({
   systemStatus: SystemStatus;
   onLogout: () => void;
 }) {
-  const [tab, setTab] = useState<"owner" | "users" | "sessions" | "audit" | "storage">("owner");
+  const [tab, setTab] = useState<"overview" | "owner" | "users" | "sessions" | "audit" | "storage">("overview");
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const ownerSessionQuery = useQuery({
     queryKey: ["owner-status"],
     queryFn: nasApi.ownerStatus,
@@ -723,60 +723,79 @@ function AdminConsole({
   });
   const ownerConnected = ownerSessionQuery.data?.connected ?? systemStatus.owner_connected;
   const tabs = [
+    { id: "overview", label: "Overview", icon: LayoutDashboard },
     { id: "owner", label: "Owner Session", icon: KeyRound },
+    { id: "storage", label: "Storage", icon: HardDrive },
     { id: "users", label: "Users", icon: Users },
     { id: "sessions", label: "Sessions", icon: History },
     { id: "audit", label: "Audit", icon: Shield },
-    { id: "storage", label: "Storage", icon: HardDrive },
   ] as const;
+  const activePage = tabs.find((item) => item.id === tab)!;
+  const navigate = (next: typeof tab) => { setTab(next); setMobileNavOpen(false); };
 
   if (tab === "storage") {
     return (
       <Dashboard
         onLogout={onLogout}
-        adminControls={{ onAdminBack: () => setTab("owner") }}
+        adminControls={{ onAdminBack: () => setTab("overview") }}
         currentUser={me.user}
       />
     );
   }
 
   return (
-    <div className="admin-console flex h-full flex-col">
-      <header className="admin-header border-b border-white/10 bg-black/20 px-6 py-4 backdrop-blur-xl">
-        <div className="admin-header-main flex flex-wrap items-center justify-between gap-4">
-          <div className="admin-title-block">
-            <p className="admin-eyebrow text-xs uppercase tracking-[0.32em] text-cyan-300">Admin Console</p>
-            <h1 className="admin-heading text-2xl font-semibold">Telegram NAS control plane</h1>
-            <p className="admin-subtitle mt-1 text-sm text-slate-300">
-              Signed in as {me.user.display_name}. Owner Telegram session is {ownerConnected ? "connected" : "waiting"}.
-            </p>
-          </div>
-          <button onClick={onLogout} className="admin-signout rounded-2xl border border-white/10 px-4 py-2 text-sm text-slate-200 transition hover:bg-white/8">
-            <span className="inline-flex items-center gap-2"><LogOut className="h-4 w-4" /> Sign Out</span>
-          </button>
-        </div>
-        <div className="admin-tabs mt-4 flex flex-wrap gap-2">
-          {tabs.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => setTab(item.id)}
-              className={`rounded-full px-4 py-2 text-sm transition ${tab === item.id ? "bg-cyan-400 text-slate-950" : "border border-white/10 bg-white/5 text-slate-200 hover:bg-white/8"}`}
-            >
-              <span className="inline-flex items-center gap-2"><item.icon className="h-4 w-4" /> {item.label}</span>
-            </button>
-          ))}
-        </div>
-      </header>
-
-      <section className="admin-content min-h-0 flex-1 overflow-auto p-6">
+    <div className="admin-console premium-admin flex h-full overflow-hidden">
+      <aside className={`admin-sidebar ${mobileNavOpen ? "is-open" : ""}`}>
+        <div className="admin-brand"><div className="admin-brand-mark"><Database /></div><div><strong>Telegram NAS</strong><span>Control plane</span></div></div>
+        <nav className="admin-side-nav" aria-label="Admin navigation">
+          <span className="admin-nav-label">Workspace</span>
+          {tabs.map((item) => <button key={item.id} onClick={() => navigate(item.id)} className={tab === item.id ? "active" : ""}><item.icon /><span>{item.label}</span>{tab === item.id && <span className="nav-active-dot" />}</button>)}
+        </nav>
+        <div className="admin-sidebar-status"><span className={ownerConnected ? "status-pulse online" : "status-pulse"} /><div><strong>Telegram network</strong><span>{ownerConnected ? "Connected and ready" : "Connection required"}</span></div></div>
+        <div className="admin-profile"><div className="admin-avatar">{me.user.display_name.slice(0, 1).toUpperCase()}</div><div><strong>{me.user.display_name}</strong><span>{me.user.role} account</span></div></div>
+      </aside>
+      {mobileNavOpen && <button className="admin-nav-scrim" onClick={() => setMobileNavOpen(false)} aria-label="Close navigation" />}
+      <main className="admin-main">
+        <header className="admin-topbar">
+          <button className="admin-menu-button" onClick={() => setMobileNavOpen(true)} aria-label="Open navigation"><Menu /></button>
+          <div className="admin-page-title"><span>Control plane / {activePage.label}</span><h1>{activePage.label}</h1></div>
+          <div className="admin-top-actions"><label className="admin-search"><Search /><input aria-label="Search" placeholder="Search control plane" /></label><span className={`admin-connection-badge ${ownerConnected ? "connected" : ""}`}><Wifi />{ownerConnected ? "Connected" : "Disconnected"}</span><button onClick={onLogout} className="admin-signout"><LogOut /> <span>Sign out</span></button></div>
+        </header>
+        <section className="admin-content min-h-0 flex-1 overflow-auto p-6">
+        {tab === "overview" && <OverviewPanel ownerConnected={ownerConnected} ownerConfigured={ownerSessionQuery.data?.configured ?? systemStatus.owner_configured} onNavigate={navigate} />}
         {tab === "owner" && <OwnerTelegramPanel csrfToken={csrfToken} onOpenStorage={() => setTab("storage")} />}
         {tab === "users" && <UsersPanel csrfToken={csrfToken} me={me} />}
         {tab === "sessions" && <SessionsPanel csrfToken={csrfToken} />}
         {tab === "audit" && <AuditPanel />}
-      </section>
+        </section>
+      </main>
     </div>
   );
 }
+
+function OverviewPanel({ ownerConnected, ownerConfigured, onNavigate }: { ownerConnected: boolean; ownerConfigured: boolean; onNavigate: (tab: "overview" | "owner" | "users" | "sessions" | "audit" | "storage") => void }) {
+  const users = useQuery({ queryKey: ["admin-users"], queryFn: nasApi.listUsers, retry: false });
+  const sessions = useQuery({ queryKey: ["admin-sessions"], queryFn: nasApi.listSessions, retry: false });
+  const audit = useQuery({ queryKey: ["admin-audit"], queryFn: nasApi.listAuditLogs, retry: false });
+  const approvedUsers = (users.data || []).filter((user) => user.is_approved && !user.disabled).length;
+  const recentAudit = (audit.data || []).slice(0, 5);
+  const stats = [
+    { label: "Telegram status", value: ownerConnected ? "Online" : "Offline", detail: ownerConnected ? "Owner session connected" : "Action may be required", icon: Wifi, tone: ownerConnected ? "green" : "amber" },
+    { label: "Total users", value: String(users.data?.length ?? "—"), detail: `${approvedUsers} approved and active`, icon: Users, tone: "cyan" },
+    { label: "Active sessions", value: String(sessions.data?.length ?? "—"), detail: "Across all accounts", icon: Activity, tone: "violet" },
+    { label: "Shared folders", value: "Manage", detail: "Permissions in Users", icon: FolderOpen, tone: "blue" },
+  ];
+  return <div className="overview-page">
+    <div className="overview-hero"><div><span className="admin-kicker">System overview</span><h2>Good to see you.</h2><p>Monitor access, sessions, and Telegram storage from one secure workspace.</p></div><button onClick={() => onNavigate("storage")} className="premium-primary"><HardDrive /> Open storage <ArrowRight /></button></div>
+    <div className="stat-grid">{stats.map((stat) => <div className="stat-card" key={stat.label}><div className={`stat-icon ${stat.tone}`}><stat.icon /></div><span>{stat.label}</span><strong>{stat.value}</strong><small>{stat.detail}</small></div>)}</div>
+    <div className="overview-lower-grid"><section className="section-card"><div className="section-heading"><div><span className="admin-kicker">Latest events</span><h3>Recent activity</h3></div><button onClick={() => onNavigate("audit")}>View audit <ArrowRight /></button></div><div className="activity-list">{recentAudit.map((entry) => <div className="activity-row" key={entry.id}><div className="activity-icon"><FileClock /></div><div><strong>{formatAuditAction(entry.action)}</strong><span>{entry.target_type} · {entry.target_id || "system"}</span></div><time>{formatTimestamp(entry.created_at)}</time></div>)}{!recentAudit.length && <PremiumEmpty icon={FileClock} title="No recent activity" text="New control-plane events will appear here." />}</div></section>
+    <div className="overview-side-stack"><section className="section-card"><div className="section-heading"><div><span className="admin-kicker">Shortcuts</span><h3>Quick actions</h3></div></div><div className="quick-actions">{[["storage","Open Storage",HardDrive],["users","Manage Users",Users],["sessions","View Sessions",History],["owner","Owner Session",KeyRound]].map(([id,label,Icon]) => <button key={id as string} onClick={() => onNavigate(id as Parameters<typeof onNavigate>[0])}><span><Icon className="h-4 w-4" />{label as string}</span><ArrowRight /></button>)}</div></section><section className={`system-card ${ownerConnected ? "online" : ""}`}><div className="system-card-icon">{ownerConnected ? <CheckCircle2 /> : <AlertTriangle />}</div><div><span>Telegram service</span><h3>{ownerConnected ? "All systems operational" : "Owner session offline"}</h3><p>{ownerConfigured ? "Configuration saved and monitored." : "Complete owner setup to enable storage."}</p></div></section></div></div>
+  </div>;
+}
+
+function PremiumEmpty({ icon: Icon, title, text }: { icon: typeof FileClock; title: string; text: string }) { return <div className="premium-empty"><Icon /><strong>{title}</strong><span>{text}</span></div>; }
+function formatTimestamp(value: number) { const ms = value < 10_000_000_000 ? value * 1000 : value; return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(ms)); }
+function formatAuditAction(value: string) { return value.replace(/[._-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()); }
 
 function OwnerTelegramPanel({ csrfToken, onOpenStorage }: { csrfToken: string | null; onOpenStorage: () => void }) {
   const client = useQueryClient();
@@ -1554,27 +1573,9 @@ function SessionsPanel({ csrfToken }: { csrfToken: string | null }) {
     toast.success("Session revoked");
   };
 
-  return (
-    <div className="rounded-[32px] border border-white/10 bg-black/25 p-6">
-      <p className="text-xs uppercase tracking-[0.32em] text-cyan-300">Active Sessions</p>
-      <div className="mt-4 grid gap-3">
-        {sessions.data?.map((session: AppSession) => (
-          <div key={session.id} className="rounded-2xl border border-white/10 bg-white/5 p-4">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <p className="font-medium">{session.username}</p>
-                <p className="text-sm text-slate-300">{session.ip_address}</p>
-                <p className="mt-1 text-xs text-slate-400">{session.user_agent}</p>
-              </div>
-              <button onClick={() => revoke(session.id)} className="rounded-2xl border border-white/10 px-4 py-2 text-sm transition hover:bg-white/8">
-                Revoke
-              </button>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
+  const allSessions = sessions.data || [];
+  const mobileCount = allSessions.filter((session) => /mobile|android|iphone|ipad/i.test(session.user_agent)).length;
+  return <div className="sessions-page"><div className="panel-intro"><div><span className="admin-kicker">Access monitoring</span><h2>Active sessions</h2><p>Review every signed-in device and revoke access instantly.</p></div><button onClick={() => sessions.refetch()} className="premium-secondary"><RefreshCw /> Refresh</button></div><div className="mini-stat-grid"><div><Activity /><span>Active sessions<strong>{allSessions.length}</strong></span></div><div><UserRound /><span>Unique users<strong>{new Set(allSessions.map((s) => s.user_id)).size}</strong></span></div><div><Smartphone /><span>Mobile devices<strong>{mobileCount}</strong></span></div><div><Monitor /><span>Desktop devices<strong>{allSessions.length - mobileCount}</strong></span></div></div><div className="section-card session-table-card"><div className="session-table-head"><span>User & device</span><span>IP address</span><span>Activity</span><span>Action</span></div><div className="session-list">{allSessions.map((session) => <div key={session.id} className="session-row"><div className="session-device"><div className="device-icon">{/mobile|android|iphone|ipad/i.test(session.user_agent) ? <Smartphone /> : <Monitor />}</div><div><strong>{session.username}</strong><span title={session.user_agent}>{session.user_agent || "Unknown device"}</span></div></div><div className="session-cell"><span className="cell-label">IP address</span><strong>{session.ip_address || "Unknown"}</strong></div><div className="session-cell"><span className="cell-label">Last active</span><strong>{formatTimestamp(session.last_seen_at)}</strong><small>Expires {formatTimestamp(session.expires_at)}</small></div><button onClick={() => revoke(session.id)} className="danger-button">Revoke</button></div>)}{!allSessions.length && <PremiumEmpty icon={Monitor} title="No active sessions" text="Signed-in devices will appear here." />}</div></div></div>;
 }
 
 function AuditPanel() {
