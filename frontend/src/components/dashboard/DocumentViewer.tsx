@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { TelegramFile } from '@shared/telegram';
 import { nasApi } from '../../lib/nasApi';
+import { ExcelWorkbookViewer } from './ExcelWorkbookViewer';
 
 interface DocumentViewerProps {
     file: TelegramFile;
@@ -9,7 +10,6 @@ interface DocumentViewerProps {
 
 type DocumentPreview =
     | { kind: 'document'; lines: string[] }
-    | { kind: 'sheet'; rows: string[][] }
     | { kind: 'slide'; lines: string[] }
     | { kind: 'text'; text: string };
 
@@ -17,7 +17,8 @@ const TEXT_EXTENSIONS = new Set([
     'txt', 'rtf', 'md', 'log', 'json', 'xml', 'yaml', 'yml', 'csv', 'ini', 'conf',
     'js', 'ts', 'jsx', 'tsx', 'py', 'rs', 'go', 'java', 'html', 'css', 'sql', 'sh', 'ps1',
 ]);
-const OFFICE_EXTENSIONS = new Set(['docx', 'xlsx', 'pptx']);
+const OFFICE_EXTENSIONS = new Set(['docx', 'pptx']);
+const SPREADSHEET_EXTENSIONS = new Set(['xlsx', 'xlsm', 'xls']);
 const MAX_TEXT_BYTES = 8_000_000;
 const MAX_OFFICE_BYTES = 40_000_000;
 
@@ -29,15 +30,24 @@ function getExtension(filename: string): string {
 
 export function isDocumentPreviewFile(filename: string): boolean {
     const extension = getExtension(filename);
-    return TEXT_EXTENSIONS.has(extension) || OFFICE_EXTENSIONS.has(extension);
+    return TEXT_EXTENSIONS.has(extension)
+        || OFFICE_EXTENSIONS.has(extension)
+        || SPREADSHEET_EXTENSIONS.has(extension);
 }
 
 export function DocumentViewer({ file, activeFolderId }: DocumentViewerProps) {
     const extension = useMemo(() => getExtension(file.name), [file.name]);
     const [preview, setPreview] = useState<DocumentPreview | null>(null);
     const [error, setError] = useState<string | null>(null);
+    const isSpreadsheet = SPREADSHEET_EXTENSIONS.has(extension);
 
     useEffect(() => {
+        if (isSpreadsheet) {
+            setPreview(null);
+            setError(null);
+            return;
+        }
+
         const controller = new AbortController();
         let cancelled = false;
 
@@ -47,7 +57,9 @@ export function DocumentViewer({ file, activeFolderId }: DocumentViewerProps) {
         async function load() {
             try {
                 if (file.text_content && TEXT_EXTENSIONS.has(extension)) {
-                    const text = extension === 'rtf' ? stripRtf(file.text_content) : normalizeText(file.text_content);
+                    const text = extension === 'rtf'
+                        ? stripRtf(file.text_content)
+                        : normalizeText(file.text_content);
                     if (!cancelled) setPreview({ kind: 'text', text });
                     return;
                 }
@@ -59,15 +71,22 @@ export function DocumentViewer({ file, activeFolderId }: DocumentViewerProps) {
                     throw new Error('This Office file is too large for an in-browser preview. Download it instead.');
                 }
 
-                const response = await fetch(nasApi.streamUrl(activeFolderId, file.id), { signal: controller.signal });
-                if (!response.ok) throw new Error(`Preview request failed (HTTP ${response.status})`);
+                const response = await fetch(nasApi.streamUrl(activeFolderId, file.id), {
+                    signal: controller.signal,
+                });
+                if (!response.ok) {
+                    throw new Error(`Preview request failed (HTTP ${response.status})`);
+                }
 
                 let parsed: DocumentPreview;
                 if (OFFICE_EXTENSIONS.has(extension)) {
                     parsed = await parseOfficePreview(await response.arrayBuffer(), extension);
                 } else {
                     const raw = await response.text();
-                    parsed = { kind: 'text', text: extension === 'rtf' ? stripRtf(raw) : normalizeText(raw) };
+                    parsed = {
+                        kind: 'text',
+                        text: extension === 'rtf' ? stripRtf(raw) : normalizeText(raw),
+                    };
                 }
 
                 if (!cancelled) setPreview(parsed);
@@ -82,7 +101,11 @@ export function DocumentViewer({ file, activeFolderId }: DocumentViewerProps) {
             cancelled = true;
             controller.abort();
         };
-    }, [activeFolderId, extension, file.id, file.name, file.size, file.text_content]);
+    }, [activeFolderId, extension, file.id, file.name, file.size, file.text_content, isSpreadsheet]);
+
+    if (isSpreadsheet) {
+        return <ExcelWorkbookViewer file={file} activeFolderId={activeFolderId} />;
+    }
 
     if (error) {
         return (
@@ -102,7 +125,6 @@ export function DocumentViewer({ file, activeFolderId }: DocumentViewerProps) {
         );
     }
 
-    if (preview.kind === 'sheet') return <FullSheet rows={preview.rows} />;
     if (preview.kind === 'slide') return <FullSlide lines={preview.lines} />;
     if (preview.kind === 'document') return <FullDocument lines={preview.lines} />;
     return <FullText text={preview.text} />;
@@ -113,7 +135,10 @@ function FullDocument({ lines }: { lines: string[] }) {
         <div className="max-h-[78vh] w-[min(860px,82vw)] overflow-auto rounded-md bg-[#202124] p-4 shadow-2xl custom-scrollbar">
             <article className="mx-auto min-h-[72vh] max-w-[760px] bg-white px-12 py-12 text-[15px] leading-7 text-slate-800 shadow-xl sm:px-16">
                 {lines.length > 0 ? lines.map((line, index) => (
-                    <p key={`${index}-${line.slice(0, 24)}`} className={`${index === 0 ? 'font-semibold text-slate-950' : ''} mb-3 whitespace-pre-wrap break-words`}>
+                    <p
+                        key={`${index}-${line.slice(0, 24)}`}
+                        className={`${index === 0 ? 'font-semibold text-slate-950' : ''} mb-3 whitespace-pre-wrap break-words`}
+                    >
                         {line}
                     </p>
                 )) : <p className="text-slate-400">This document has no extractable text.</p>}
@@ -137,36 +162,13 @@ function FullSlide({ lines }: { lines: string[] }) {
         <div className="max-h-[78vh] w-[min(1100px,86vw)] overflow-auto rounded-md bg-[#202124] p-5 shadow-2xl custom-scrollbar">
             <div className="mx-auto flex aspect-video max-w-[1000px] flex-col justify-center overflow-hidden bg-white px-16 py-12 text-slate-800 shadow-xl">
                 {lines.length > 0 ? lines.map((line, index) => (
-                    <p key={`${index}-${line.slice(0, 24)}`} className={index === 0 ? 'mb-6 text-3xl font-bold' : 'mb-3 text-lg'}>
+                    <p
+                        key={`${index}-${line.slice(0, 24)}`}
+                        className={index === 0 ? 'mb-6 text-3xl font-bold' : 'mb-3 text-lg'}
+                    >
                         {line}
                     </p>
                 )) : <p className="text-slate-400">This slide has no extractable text.</p>}
-            </div>
-        </div>
-    );
-}
-
-function FullSheet({ rows }: { rows: string[][] }) {
-    const columnCount = Math.min(14, Math.max(1, ...rows.map((row) => row.length)));
-    return (
-        <div className="max-h-[78vh] w-[min(1200px,88vw)] overflow-auto rounded-md bg-[#202124] p-4 shadow-2xl custom-scrollbar">
-            <div className="min-w-[720px] bg-white p-4 shadow-xl">
-                <table className="w-full border-collapse text-sm text-slate-800">
-                    <tbody>
-                        {rows.slice(0, 100).map((row, rowIndex) => (
-                            <tr key={rowIndex}>
-                                {Array.from({ length: columnCount }, (_, columnIndex) => (
-                                    <td
-                                        key={columnIndex}
-                                        className={`min-w-[90px] max-w-[240px] border border-slate-300 px-2 py-1.5 align-top ${rowIndex === 0 ? 'bg-emerald-50 font-semibold' : ''}`}
-                                    >
-                                        <div className="whitespace-pre-wrap break-words">{row[columnIndex] || ''}</div>
-                                    </td>
-                                ))}
-                            </tr>
-                        ))}
-                    </tbody>
-                </table>
             </div>
         </div>
     );
@@ -226,24 +228,12 @@ async function parseOfficePreview(buffer: ArrayBuffer, extension: string): Promi
         return { kind: 'document', lines: extractWordParagraphs(xml) };
     }
 
-    if (extension === 'xlsx') {
-        const sharedXml = await readZipText(buffer, entries, 'xl/sharedStrings.xml');
-        const sharedStrings = sharedXml ? extractSharedStrings(sharedXml) : [];
-        const firstSheet = entries
-            .map((entry) => entry.name)
-            .filter((name) => /^xl\/worksheets\/sheet\d+\.xml$/i.test(name))
-            .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))[0];
-        if (!firstSheet) throw new Error('XLSX worksheet was not found.');
-        const sheetXml = await readZipText(buffer, entries, firstSheet);
-        if (!sheetXml) throw new Error('XLSX worksheet could not be read.');
-        return { kind: 'sheet', rows: extractSheetRows(sheetXml, sharedStrings) };
-    }
-
     const firstSlide = entries
         .map((entry) => entry.name)
         .filter((name) => /^ppt\/slides\/slide\d+\.xml$/i.test(name))
         .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))[0];
     if (!firstSlide) throw new Error('PPTX slide was not found.');
+
     const slideXml = await readZipText(buffer, entries, firstSlide);
     if (!slideXml) throw new Error('PPTX slide could not be read.');
     return { kind: 'slide', lines: extractSlideText(slideXml) };
@@ -271,6 +261,7 @@ function readZipEntries(buffer: ArrayBuffer): ZipEntry[] {
 
     for (let index = 0; index < entryCount; index += 1) {
         if (offset + 46 > bytes.length || view.getUint32(offset, true) !== 0x02014b50) break;
+
         const method = view.getUint16(offset + 10, true);
         const compressedSize = view.getUint32(offset + 20, true);
         const nameLength = view.getUint16(offset + 28, true);
@@ -279,9 +270,11 @@ function readZipEntries(buffer: ArrayBuffer): ZipEntry[] {
         const localOffset = view.getUint32(offset + 42, true);
         const nameStart = offset + 46;
         const name = decoder.decode(bytes.slice(nameStart, nameStart + nameLength));
+
         entries.push({ name, method, compressedSize, localOffset });
         offset = nameStart + nameLength + extraLength + commentLength;
     }
+
     return entries;
 }
 
@@ -305,9 +298,16 @@ async function readZipText(buffer: ArrayBuffer, entries: ZipEntry[], name: strin
     if (entry.method === 0) {
         output = compressed;
     } else if (entry.method === 8) {
-        if (typeof DecompressionStream === 'undefined') throw new Error('This browser cannot unpack Office previews.');
-        const compressedBuffer = compressed.buffer.slice(compressed.byteOffset, compressed.byteOffset + compressed.byteLength) as ArrayBuffer;
-        const decompressed = new Blob([compressedBuffer]).stream().pipeThrough(new DecompressionStream('deflate-raw' as any));
+        if (typeof DecompressionStream === 'undefined') {
+            throw new Error('This browser cannot unpack Office previews.');
+        }
+        const compressedBuffer = compressed.buffer.slice(
+            compressed.byteOffset,
+            compressed.byteOffset + compressed.byteLength,
+        ) as ArrayBuffer;
+        const decompressed = new Blob([compressedBuffer])
+            .stream()
+            .pipeThrough(new DecompressionStream('deflate-raw' as any));
         output = new Uint8Array(await new Response(decompressed).arrayBuffer());
     } else {
         throw new Error(`Unsupported Office compression method ${entry.method}.`);
@@ -335,28 +335,10 @@ function extractWordParagraphs(xml: string): string[] {
         .slice(0, 500);
 }
 
-function extractSharedStrings(xml: string): string[] {
-    const doc = parseXml(xml);
-    return Array.from(doc.getElementsByTagNameNS('*', 'si')).map((item) => textFromElements(item, 't').join(''));
-}
-
-function extractSheetRows(xml: string, sharedStrings: string[]): string[][] {
-    const doc = parseXml(xml);
-    return Array.from(doc.getElementsByTagNameNS('*', 'row')).slice(0, 100).map((row) => {
-        return Array.from(row.getElementsByTagNameNS('*', 'c')).slice(0, 14).map((cell) => {
-            const type = cell.getAttribute('t');
-            if (type === 'inlineStr') return textFromElements(cell, 't').join('');
-            const value = cell.getElementsByTagNameNS('*', 'v')[0]?.textContent || '';
-            if (type === 's') {
-                const index = Number.parseInt(value, 10);
-                return Number.isFinite(index) ? sharedStrings[index] || '' : value;
-            }
-            return value;
-        });
-    });
-}
-
 function extractSlideText(xml: string): string[] {
     const doc = parseXml(xml);
-    return textFromElements(doc, 't').map((line) => line.trim()).filter(Boolean).slice(0, 200);
+    return textFromElements(doc, 't')
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .slice(0, 200);
 }
