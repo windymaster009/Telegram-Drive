@@ -1,9 +1,8 @@
 import { motion } from 'framer-motion';
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { Folder, Eye, Trash2 } from 'lucide-react';
 import type { TelegramFile } from '@shared/telegram';
-import { FileTypeIcon } from '../FileTypeIcon';
-import { nasApi } from '../../lib/nasApi';
+import { FilePreview } from './FilePreview';
 
 interface FileCardProps {
     file: TelegramFile;
@@ -22,29 +21,9 @@ interface FileCardProps {
     canWrite?: boolean;
 }
 
-// Check if file is an image type that can have a thumbnail
-function isImageFile(filename: string): boolean {
-    const ext = filename.split('.').pop()?.toLowerCase() || '';
-    return ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].includes(ext);
-}
-
 export function FileCard({ file, onDelete, onDownload, onPreview, isSelected, onClick, onContextMenu, onDrop, onDragStart, onDragEnd, activeFolderId, height, onToggleSelection, canWrite = true }: FileCardProps) {
     const isFolder = file.type === 'folder';
     const [isDragOver, setIsDragOver] = useState(false);
-    const [thumbnail, setThumbnail] = useState<string | null>(null);
-    const [thumbnailLoading, setThumbnailLoading] = useState(false);
-
-    // Lazy load thumbnail for image files
-    useEffect(() => {
-        if (isFolder || !isImageFile(file.name)) {
-            setThumbnail(null);
-            return;
-        }
-
-        setThumbnailLoading(true);
-        setThumbnail(nasApi.streamUrl(activeFolderId ?? null, file.id));
-        setThumbnailLoading(false);
-    }, [file.id, file.name, activeFolderId, isFolder]);
 
     return (
         <div
@@ -80,7 +59,7 @@ export function FileCard({ file, onDelete, onDownload, onPreview, isSelected, on
                 onDragStart={(e: any) => {
                     if (!canWrite) return;
                     if (onDragStart) onDragStart(file.id);
-                    e.dataTransfer.setData("application/x-telegram-file-id", file.id.toString());
+                    e.dataTransfer.setData('application/x-telegram-file-id', file.id.toString());
                     e.dataTransfer.effectAllowed = 'move';
                 }}
                 onDragEnd={() => {
@@ -92,30 +71,18 @@ export function FileCard({ file, onDelete, onDownload, onPreview, isSelected, on
                 ${isDragOver ? 'ring-2 ring-telegram-primary bg-telegram-primary/20 scale-105' : ''}`}
                 style={height ? { height: `${height}px` } : { aspectRatio: '4/3' }}
             >
-                {/* Preview/icon area. File name lives in a separate footer so it never covers the icon. */}
+                {/* Drive-style visual preview. Heavy previews are lazy-loaded near the viewport. */}
                 <div className="relative min-h-0 flex-1 overflow-hidden bg-telegram-bg/35">
-                    {thumbnail ? (
-                        <img
-                            src={thumbnail}
-                            alt={file.name}
-                            loading="lazy"
-                            onError={() => setThumbnail(null)}
-                            className="absolute inset-0 h-full w-full object-cover"
-                        />
-                    ) : (
+                    {isFolder ? (
                         <div className="absolute inset-0 flex items-center justify-center p-3">
-                            {isFolder ? (
-                                <Folder className="h-14 w-14 text-telegram-primary" />
-                            ) : thumbnailLoading && isImageFile(file.name) ? (
-                                <div className="h-8 w-8 animate-spin rounded-full border-2 border-telegram-primary/30 border-t-telegram-primary" />
-                            ) : (
-                                <FileTypeIcon filename={file.name} size="lg" />
-                            )}
+                            <Folder className="h-14 w-14 text-telegram-primary" />
                         </div>
+                    ) : (
+                        <FilePreview file={file} activeFolderId={activeFolderId ?? null} />
                     )}
                 </div>
 
-                {/* Dedicated info footer: no overlay on icons or thumbnails. */}
+                {/* Dedicated info footer so names never cover the preview. */}
                 <div className="shrink-0 border-t border-telegram-border/70 bg-telegram-surface px-3 py-2.5">
                     <h3
                         className="overflow-hidden break-words text-sm font-semibold leading-[1.15rem] text-telegram-text"
