@@ -44,6 +44,7 @@ export interface DownloadItem {
     messageId: number;
     filename: string;
     folderId: number | null;
+    fileSize?: number;
     status: 'pending' | 'downloading' | 'success' | 'error' | 'cancelled';
     error?: string;
     progress?: number; // 0-100
