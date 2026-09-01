@@ -3,6 +3,7 @@ import { X, File, ChevronLeft, ChevronRight } from 'lucide-react';
 import type { TelegramFile } from '@shared/telegram';
 import { isImageFile, isTextFile } from '../../utils';
 import { nasApi } from '../../lib/nasApi';
+import { DocumentViewer, isDocumentPreviewFile } from './DocumentViewer';
 
 const PREVIEW_CACHE_TTL_MS = 5 * 60 * 1000;
 const PREVIEW_CACHE_MAX_ITEMS = 8;
@@ -106,6 +107,8 @@ export function PreviewModal({ file, onClose, onNext, onPrev, currentIndex, tota
     const [reloadNonce, setReloadNonce] = useState(0);
     const [retryCount, setRetryCount] = useState(0);
     const latestRequestRef = useRef(0);
+    const supportsDocumentPreview = isDocumentPreviewFile(file.name);
+    const hasEmbeddedText = Boolean(file.text_content && isTextFile(file.name));
 
     useEffect(() => {
         setRetryCount(0);
@@ -114,8 +117,15 @@ export function PreviewModal({ file, onClose, onNext, onPrev, currentIndex, tota
 
     useEffect(() => {
         const load = async () => {
-            if (file.text_content && isTextFile(file.name)) {
+            if (hasEmbeddedText) {
                 setSrc('data:text/plain;base64,');
+                setLoading(false);
+                setError(null);
+                return;
+            }
+
+            if (supportsDocumentPreview) {
+                setSrc('document-preview://ready');
                 setLoading(false);
                 setError(null);
                 return;
@@ -144,7 +154,7 @@ export function PreviewModal({ file, onClose, onNext, onPrev, currentIndex, tota
                     setSrc(url);
                     rememberPreview(key, url);
                 } else {
-                    setError("Preview not available");
+                    setError('Preview not available');
                 }
             } catch (e) {
                 if (requestId !== latestRequestRef.current) return;
@@ -155,7 +165,7 @@ export function PreviewModal({ file, onClose, onNext, onPrev, currentIndex, tota
             }
         };
         load();
-    }, [file, activeFolderId, reloadNonce]);
+    }, [file, activeFolderId, reloadNonce, hasEmbeddedText, supportsDocumentPreview]);
 
     useEffect(() => {
         const candidates = [nextFile, prevFile].filter((f): f is TelegramFile => !!f && isSafeToPrefetch(f.name));
@@ -176,24 +186,19 @@ export function PreviewModal({ file, onClose, onNext, onPrev, currentIndex, tota
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
             const target = e.target as HTMLElement;
-            if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
-                return;
-            }
+            if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return;
 
             const key = e.key.toLowerCase();
-
             if (e.key === 'ArrowRight' || key === 'l') {
                 e.preventDefault();
                 onNext?.();
                 return;
             }
-
             if (e.key === 'ArrowLeft' || key === 'j') {
                 e.preventDefault();
                 onPrev?.();
                 return;
             }
-
             if (e.key === 'Escape') {
                 e.preventDefault();
                 onClose();
@@ -205,83 +210,75 @@ export function PreviewModal({ file, onClose, onNext, onPrev, currentIndex, tota
     }, [onClose, onNext, onPrev]);
 
     return (
-        <div className="fixed inset-0 z-[150] bg-black/90 flex items-center justify-center p-4 backdrop-blur-sm" onClick={onClose}>
-            <div className="relative max-w-5xl w-full max-h-screen flex flex-col items-center justify-center" onClick={e => e.stopPropagation()}>
+        <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/90 p-4 backdrop-blur-sm" onClick={onClose}>
+            <div className="relative flex max-h-screen w-full max-w-6xl flex-col items-center justify-center" onClick={e => e.stopPropagation()}>
                 <button
                     onClick={onPrev}
-                    className="absolute left-2 top-1/2 -translate-y-1/2 p-2 bg-black/60 hover:bg-black/80 rounded-full transition-colors"
+                    className="absolute left-2 top-1/2 z-20 -translate-y-1/2 rounded-full bg-black/60 p-2 transition-colors hover:bg-black/80"
                     style={{ color: '#ffffff' }}
                     title="Previous (ArrowLeft / J)"
                 >
-                    <ChevronLeft className="w-6 h-6" />
+                    <ChevronLeft className="h-6 w-6" />
                 </button>
 
                 <button
                     onClick={onNext}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 p-2 bg-black/60 hover:bg-black/80 rounded-full transition-colors"
+                    className="absolute right-2 top-1/2 z-20 -translate-y-1/2 rounded-full bg-black/60 p-2 transition-colors hover:bg-black/80"
                     style={{ color: '#ffffff' }}
                     title="Next (ArrowRight / L)"
                 >
-                    <ChevronRight className="w-6 h-6" />
+                    <ChevronRight className="h-6 w-6" />
                 </button>
 
                 <button
                     onClick={onClose}
-                    className="absolute -top-12 right-0 p-2 bg-black/60 hover:bg-black/80 rounded-full transition-colors"
+                    className="absolute -top-12 right-0 z-20 rounded-full bg-black/60 p-2 transition-colors hover:bg-black/80"
                     style={{ color: '#ffffff' }}
                 >
-                    <X className="w-6 h-6" />
+                    <X className="h-6 w-6" />
                 </button>
 
                 {loading && (
                     <div className="flex flex-col items-center gap-4 text-white">
-                        <div className="w-10 h-10 border-4 border-telegram-primary border-t-transparent rounded-full animate-spin"></div>
+                        <div className="h-10 w-10 animate-spin rounded-full border-4 border-telegram-primary border-t-transparent" />
                         <p>Loading preview...</p>
                         <p className="text-xs text-white/50">Downloading from Telegram...</p>
                     </div>
                 )}
 
                 {error && (
-                    <div className="text-red-400 bg-white/10 p-4 rounded-lg border border-red-500/20">
+                    <div className="rounded-lg border border-red-500/20 bg-white/10 p-4 text-red-400">
                         <p className="font-bold">Preview Error</p>
                         <p className="text-sm">{error}</p>
                     </div>
                 )}
 
                 {!loading && !error && src && (
-                    <div className="flex flex-col items-center">
+                    <div className="flex max-h-[82vh] w-full flex-col items-center justify-center">
                         {isImageFile(file.name) ? (
                             <img
                                 src={src}
-                                className="max-w-full max-h-[85vh] object-contain rounded-lg shadow-2xl bg-black"
+                                className="max-h-[82vh] max-w-full rounded-lg bg-black object-contain shadow-2xl"
                                 alt="Preview"
                                 onError={() => {
                                     const key = getPreviewCacheKey(file.id, activeFolderId);
                                     forgetPreview(key);
-
                                     if (retryCount < 1) {
                                         setRetryCount((prev) => prev + 1);
                                         setReloadNonce((prev) => prev + 1);
                                         return;
                                     }
-
                                     setError('Failed to render image preview');
                                 }}
                             />
-                        ) : isTextFile(file.name) ? (
-                            <div className="bg-[#141c26] border border-white/10 shadow-2xl rounded-lg max-w-4xl max-h-[80vh] overflow-auto p-5">
+                        ) : hasEmbeddedText ? (
+                            <div className="max-h-[80vh] max-w-4xl overflow-auto rounded-lg border border-white/10 bg-[#141c26] p-5 shadow-2xl custom-scrollbar">
                                 {(() => {
                                     const text = file.text_content || decodeTextDataUrl(src) || '';
                                     const blocks = parseTextMessageBlocks(text);
-
                                     if (blocks.length === 0) {
-                                        return (
-                                            <pre className="text-left text-sm leading-6 text-white/90 whitespace-pre-wrap break-words font-mono">
-                                                {text}
-                                            </pre>
-                                        );
+                                        return <pre className="whitespace-pre-wrap break-words text-left font-mono text-sm leading-6 text-white/90">{text}</pre>;
                                     }
-
                                     return (
                                         <div className="space-y-8 text-left font-mono">
                                             {blocks.map((block) => (
@@ -290,27 +287,27 @@ export function PreviewModal({ file, onClose, onNext, onPrev, currentIndex, tota
                                                         <div className="text-xl font-bold text-white">Message #{block.id}</div>
                                                         <div className="mt-1 text-sm font-semibold text-telegram-primary">{block.date}</div>
                                                     </div>
-                                                    <pre className="text-sm leading-6 text-white/90 whitespace-pre-wrap break-words font-mono">
-                                                        {block.body}
-                                                    </pre>
+                                                    <pre className="whitespace-pre-wrap break-words font-mono text-sm leading-6 text-white/90">{block.body}</pre>
                                                 </section>
                                             ))}
                                         </div>
                                     );
                                 })()}
                             </div>
+                        ) : supportsDocumentPreview ? (
+                            <DocumentViewer file={file} activeFolderId={activeFolderId} />
                         ) : (
-                            <div className="bg-[#1c1c1c] p-8 rounded-xl text-center border border-white/10 shadow-2xl">
-                                <File className="w-16 h-16 text-telegram-primary mx-auto mb-4" />
-                                <h3 className="text-xl text-white font-medium mb-2">{file.name}</h3>
-                                <p className="text-gray-400 mb-6">Preview not supported in app.</p>
+                            <div className="rounded-xl border border-white/10 bg-[#1c1c1c] p-8 text-center shadow-2xl">
+                                <File className="mx-auto mb-4 h-16 w-16 text-telegram-primary" />
+                                <h3 className="mb-2 text-xl font-medium text-white">{file.name}</h3>
+                                <p className="mb-6 text-gray-400">Preview not supported in app.</p>
                                 <p className="text-xs text-gray-500">File type: {file.name.split('.').pop()}</p>
                             </div>
                         )}
                     </div>
                 )}
 
-                <div className="absolute bottom-[-3rem] text-white text-sm opacity-50">
+                <div className="absolute bottom-[-3rem] text-sm text-white opacity-50">
                     {file.name}
                     {typeof currentIndex === 'number' && typeof totalItems === 'number' && totalItems > 0 && (
                         <span className="ml-3">{currentIndex + 1}/{totalItems}</span>
