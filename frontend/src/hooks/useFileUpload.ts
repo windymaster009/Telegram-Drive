@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { useQueryClient } from '@tanstack/react-query';
@@ -16,6 +16,7 @@ interface ProgressPayload {
 const MAX_UPLOAD_BATCH_SIZE = 10;
 const MAX_QUEUED_UPLOADS = 30;
 const UPLOAD_SPACING_MS = 12_000;
+const EXTERNAL_FILE_DROP_EVENT = 'telegram-drive:external-file-drop';
 
 const isTauriRuntime = () =>
     typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -84,6 +85,35 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
     const [pausedUntil, setPausedUntil] = useState(0);
     const cancelledRef = useRef<Set<string>>(new Set());
     const browserFilesRef = useRef<Map<string, File>>(new Map());
+
+    const enqueueBrowserFiles = useCallback((selectedFiles: File[]) => {
+        if (selectedFiles.length === 0) return;
+
+        const activeCount = uploadQueue.filter(item => item.status === 'pending' || item.status === 'uploading').length;
+        const availableSlots = Math.max(0, MAX_QUEUED_UPLOADS - activeCount);
+        if (availableSlots === 0) {
+            toast.error(`Upload queue is full. Keep it under ${MAX_QUEUED_UPLOADS} files.`);
+            return;
+        }
+
+        const files = selectedFiles.slice(0, Math.min(MAX_UPLOAD_BATCH_SIZE, availableSlots));
+        const newItems: QueueItem[] = files.map((file) => {
+            const id = Math.random().toString(36).substr(2, 9);
+            browserFilesRef.current.set(id, file);
+            return {
+                id,
+                path: file.name,
+                folderId: activeFolderId,
+                status: 'pending'
+            };
+        });
+
+        setUploadQueue(prev => [...prev, ...newItems]);
+        toast.info(`Queued ${files.length} files for upload`);
+        if (selectedFiles.length > files.length) {
+            toast.info(`Only queued ${files.length} files to keep upload activity gentle.`);
+        }
+    }, [activeFolderId, uploadQueue]);
 
     // Native progress events only exist in the Tauri desktop runtime.
     useEffect(() => {
@@ -233,29 +263,27 @@ export function useFileUpload(activeFolderId: number | null, store: Store | null
             }
 
             const selectedFiles = await pickBrowserFiles();
-            if (selectedFiles.length === 0) return;
-
-            const files = selectedFiles.slice(0, Math.min(MAX_UPLOAD_BATCH_SIZE, availableSlots));
-            const newItems: QueueItem[] = files.map((file) => {
-                const id = Math.random().toString(36).substr(2, 9);
-                browserFilesRef.current.set(id, file);
-                return {
-                    id,
-                    path: file.name,
-                    folderId: activeFolderId,
-                    status: 'pending'
-                };
-            });
-
-            setUploadQueue(prev => [...prev, ...newItems]);
-            toast.info(`Queued ${files.length} files for upload`);
-            if (selectedFiles.length > files.length) {
-                toast.info(`Only queued ${files.length} files to keep upload activity gentle.`);
-            }
+            enqueueBrowserFiles(selectedFiles);
         } catch (e) {
             toast.error(`Failed to open file dialog: ${String(e)}`);
         }
     };
+
+    useEffect(() => {
+        if (isTauriRuntime()) return;
+
+        const handleExternalFileDrop = (event: Event) => {
+            const files = (event as CustomEvent<File[]>).detail;
+            if (Array.isArray(files) && files.length > 0) {
+                enqueueBrowserFiles(files);
+            }
+        };
+
+        window.addEventListener(EXTERNAL_FILE_DROP_EVENT, handleExternalFileDrop as EventListener);
+        return () => {
+            window.removeEventListener(EXTERNAL_FILE_DROP_EVENT, handleExternalFileDrop as EventListener);
+        };
+    }, [enqueueBrowserFiles]);
 
     const cancelAll = () => {
         setUploadQueue(q => {
