@@ -1,12 +1,11 @@
 import { useState, useEffect } from 'react';
 import { Upload } from 'lucide-react';
 
+const EXTERNAL_FILE_DROP_EVENT = 'telegram-drive:external-file-drop';
+
 /**
- * ExternalDropBlocker - Intercepts external file drops and shows a helpful message
- * 
- * Since Tauri's native drag-drop is disabled, we need to prevent the browser's
- * default behavior (which would show file contents) and instead guide users
- * to use the Upload button.
+ * Handles files dragged in from the operating system. Internal Telegram Drive
+ * drags use a custom data-transfer type, so they are left alone.
  */
 export function ExternalDropBlocker({ onUploadClick }: { onUploadClick: () => void }) {
     const [showMessage, setShowMessage] = useState(false);
@@ -15,17 +14,16 @@ export function ExternalDropBlocker({ onUploadClick }: { onUploadClick: () => vo
         let hideTimeout: ReturnType<typeof setTimeout>;
 
         const handleDragOver = (e: DragEvent) => {
-            // Check if this is an external file drag (from Finder)
             if (e.dataTransfer?.types.includes('Files')) {
                 e.preventDefault();
                 e.stopPropagation();
+                e.dataTransfer.dropEffect = 'copy';
                 setShowMessage(true);
                 clearTimeout(hideTimeout);
             }
         };
 
         const handleDragLeave = (e: DragEvent) => {
-            // Only hide if leaving the window entirely
             if (e.clientX <= 0 || e.clientY <= 0 ||
                 e.clientX >= window.innerWidth || e.clientY >= window.innerHeight) {
                 hideTimeout = setTimeout(() => setShowMessage(false), 100);
@@ -33,12 +31,18 @@ export function ExternalDropBlocker({ onUploadClick }: { onUploadClick: () => vo
         };
 
         const handleDrop = (e: DragEvent) => {
-            // Block external file drops
-            if (e.dataTransfer?.types.includes('Files')) {
-                e.preventDefault();
-                e.stopPropagation();
-                // Keep message visible briefly so user sees it
-                setTimeout(() => setShowMessage(false), 2000);
+            if (!e.dataTransfer?.types.includes('Files')) return;
+
+            e.preventDefault();
+            e.stopPropagation();
+
+            const files = Array.from(e.dataTransfer.files ?? []);
+            setShowMessage(false);
+
+            if (files.length > 0) {
+                window.dispatchEvent(new CustomEvent<File[]>(EXTERNAL_FILE_DROP_EVENT, {
+                    detail: files,
+                }));
             }
         };
 
@@ -65,13 +69,13 @@ export function ExternalDropBlocker({ onUploadClick }: { onUploadClick: () => vo
                     </div>
                     <div>
                         <h3 className="text-lg font-semibold text-telegram-text mb-2">
-                            Use the Upload Button
+                            Drop files to upload
                         </h3>
                         <p className="text-telegram-subtext text-sm">
-                            To upload files, please use the <strong>Upload</strong> button in the toolbar.
+                            Release anywhere to upload these files to the current folder.
                             <br />
                             <span className="text-xs opacity-70 mt-2 block">
-                                Drag-and-drop from Finder is not supported.
+                                You can drop multiple files at once.
                             </span>
                         </p>
                     </div>
@@ -82,7 +86,7 @@ export function ExternalDropBlocker({ onUploadClick }: { onUploadClick: () => vo
                         }}
                         className="mt-2 px-6 py-2 bg-telegram-primary text-white rounded-lg font-medium hover:bg-telegram-primary/90 transition-colors"
                     >
-                        Open Upload Dialog
+                        Choose Files Instead
                     </button>
                 </div>
             </div>
