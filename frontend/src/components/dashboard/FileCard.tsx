@@ -30,6 +30,12 @@ export function FileCard({ file, onDelete, onDownload, onPreview, isSelected, on
             className="relative"
             onContextMenu={onContextMenu}
             onClick={onClick}
+            onDoubleClick={(e) => {
+                if (isFolder || (e.target as HTMLElement).closest('button')) return;
+                e.preventDefault();
+                e.stopPropagation();
+                onPreview?.();
+            }}
             onDragOver={(e) => {
                 if (isFolder) {
                     e.preventDefault();
