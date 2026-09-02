@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { TelegramFile } from '@shared/telegram';
 import { nasApi } from '../../lib/nasApi';
 import { ExcelWorkbookViewer } from './ExcelWorkbookViewer';
+import { WordDocumentViewer } from './WordDocumentViewer';
 
 interface DocumentViewerProps {
     file: TelegramFile;
@@ -40,9 +41,10 @@ export function DocumentViewer({ file, activeFolderId }: DocumentViewerProps) {
     const [preview, setPreview] = useState<DocumentPreview | null>(null);
     const [error, setError] = useState<string | null>(null);
     const isSpreadsheet = SPREADSHEET_EXTENSIONS.has(extension);
+    const isWordDocument = extension === 'docx';
 
     useEffect(() => {
-        if (isSpreadsheet) {
+        if (isSpreadsheet || isWordDocument) {
             setPreview(null);
             setError(null);
             return;
@@ -101,7 +103,11 @@ export function DocumentViewer({ file, activeFolderId }: DocumentViewerProps) {
             cancelled = true;
             controller.abort();
         };
-    }, [activeFolderId, extension, file.id, file.name, file.size, file.text_content, isSpreadsheet]);
+    }, [activeFolderId, extension, file.id, file.name, file.size, file.text_content, isSpreadsheet, isWordDocument]);
+
+    if (isWordDocument) {
+        return <WordDocumentViewer file={file} activeFolderId={activeFolderId} />;
+    }
 
     if (isSpreadsheet) {
         return <ExcelWorkbookViewer file={file} activeFolderId={activeFolderId} />;
