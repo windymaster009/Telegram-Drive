@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Eye, HardDrive, Trash2, FolderOpen, Pencil, Play, FileText } from 'lucide-react';
 import type { TelegramFile } from '@shared/telegram';
 import { isMediaFile, isPdfFile } from '../../utils';
+import { openFileMetadataEditor } from './FileMetadataEditHost';
 
 interface ContextMenuProps {
     x: number;
@@ -96,10 +97,16 @@ export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPrevi
                 Download
             </button>
 
-            {canWrite && (
-                <button disabled className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-subtext hover:bg-telegram-hover rounded transition-colors text-left w-full cursor-not-allowed opacity-50">
-                    <Pencil className="w-4 h-4" />
-                    Rename
+            {canWrite && file.type !== 'folder' && (
+                <button
+                    onClick={() => {
+                        openFileMetadataEditor(file);
+                        onClose();
+                    }}
+                    className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-text hover:bg-telegram-hover rounded transition-colors text-left w-full"
+                >
+                    <Pencil className="w-4 h-4 text-telegram-primary" />
+                    Edit details
                 </button>
             )}
 
