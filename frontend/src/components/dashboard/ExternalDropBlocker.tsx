@@ -2,13 +2,19 @@ import { useState, useEffect } from 'react';
 import { Upload } from 'lucide-react';
 
 const EXTERNAL_FILE_DROP_EVENT = 'telegram-drive:external-file-drop';
+const isTauriRuntime = () =>
+    typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
 /**
  * Handles files dragged in from the operating system. Internal Telegram Drive
  * drags use a custom data-transfer type, so they are left alone.
+ *
+ * Browser/web builds can upload File objects directly. The Tauri desktop build
+ * keeps its file-picker fallback because native uploads require filesystem paths.
  */
 export function ExternalDropBlocker({ onUploadClick }: { onUploadClick: () => void }) {
     const [showMessage, setShowMessage] = useState(false);
+    const desktopRuntime = isTauriRuntime();
 
     useEffect(() => {
         let hideTimeout: ReturnType<typeof setTimeout>;
@@ -17,7 +23,7 @@ export function ExternalDropBlocker({ onUploadClick }: { onUploadClick: () => vo
             if (e.dataTransfer?.types.includes('Files')) {
                 e.preventDefault();
                 e.stopPropagation();
-                e.dataTransfer.dropEffect = 'copy';
+                e.dataTransfer.dropEffect = desktopRuntime ? 'none' : 'copy';
                 setShowMessage(true);
                 clearTimeout(hideTimeout);
             }
@@ -35,6 +41,11 @@ export function ExternalDropBlocker({ onUploadClick }: { onUploadClick: () => vo
 
             e.preventDefault();
             e.stopPropagation();
+
+            if (desktopRuntime) {
+                hideTimeout = setTimeout(() => setShowMessage(false), 2000);
+                return;
+            }
 
             const files = Array.from(e.dataTransfer.files ?? []);
             setShowMessage(false);
@@ -56,7 +67,7 @@ export function ExternalDropBlocker({ onUploadClick }: { onUploadClick: () => vo
             document.removeEventListener('drop', handleDrop, true);
             clearTimeout(hideTimeout);
         };
-    }, []);
+    }, [desktopRuntime]);
 
     if (!showMessage) return null;
 
@@ -69,13 +80,17 @@ export function ExternalDropBlocker({ onUploadClick }: { onUploadClick: () => vo
                     </div>
                     <div>
                         <h3 className="text-lg font-semibold text-telegram-text mb-2">
-                            Drop files to upload
+                            {desktopRuntime ? 'Use the Upload Button' : 'Drop files to upload'}
                         </h3>
                         <p className="text-telegram-subtext text-sm">
-                            Release anywhere to upload these files to the current folder.
+                            {desktopRuntime
+                                ? 'Desktop uploads still use the native file picker.'
+                                : 'Release anywhere to upload these files to the current folder.'}
                             <br />
                             <span className="text-xs opacity-70 mt-2 block">
-                                You can drop multiple files at once.
+                                {desktopRuntime
+                                    ? 'Drag-and-drop from the operating system is not available in desktop mode.'
+                                    : 'You can drop multiple files at once.'}
                             </span>
                         </p>
                     </div>
@@ -86,7 +101,7 @@ export function ExternalDropBlocker({ onUploadClick }: { onUploadClick: () => vo
                         }}
                         className="mt-2 px-6 py-2 bg-telegram-primary text-white rounded-lg font-medium hover:bg-telegram-primary/90 transition-colors"
                     >
-                        Choose Files Instead
+                        {desktopRuntime ? 'Open Upload Dialog' : 'Choose Files Instead'}
                     </button>
                 </div>
             </div>
