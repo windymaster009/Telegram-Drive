@@ -29,6 +29,12 @@ export function FileListItem({
     return (
         <div
             onClick={(e) => onFileClick(e, file.id)}
+            onDoubleClick={(e) => {
+                if (isFolder || (e.target as HTMLElement).closest('button')) return;
+                e.preventDefault();
+                e.stopPropagation();
+                onPreview(file);
+            }}
             onContextMenu={(e) => handleContextMenu(e, file)}
             draggable={canWrite}
             onDragStart={(e) => {
