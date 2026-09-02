@@ -8,6 +8,7 @@ import { Chrome, Copy, Shield, UserPlus, Users, History, KeyRound, ScanQrCode, H
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Dashboard } from "./components/Dashboard";
 import { UpdateBanner } from "./components/UpdateBanner";
+import { AdminUserEditHost, ADMIN_USER_UPDATED_EVENT, openAdminUserEditor } from "./components/admin/AdminUserEditHost";
 import { useUpdateCheck } from "./hooks/useUpdateCheck";
 import { nasApi, nasSession } from "./lib/nasApi";
 import { ConfirmProvider } from "./context/ConfirmContext";
@@ -1174,6 +1175,17 @@ function UsersPanel({ csrfToken, me }: { csrfToken: string | null; me: MeRespons
     setPermissionDraft(permissions.data || []);
   }, [permissions.data]);
 
+  useEffect(() => {
+    const handleUserUpdated = (event: Event) => {
+      const updatedUser = (event as CustomEvent<{ user?: AppUser }>).detail?.user;
+      if (!updatedUser) return;
+      setSelectedUser((current) => current?.id === updatedUser.id ? updatedUser : current);
+    };
+
+    window.addEventListener(ADMIN_USER_UPDATED_EVENT, handleUserUpdated);
+    return () => window.removeEventListener(ADMIN_USER_UPDATED_EVENT, handleUserUpdated);
+  }, []);
+
   const availableFolders = useMemo(
     () => [
       ...(folderCatalog.data || []).map((folder) => ({
@@ -1305,6 +1317,7 @@ function UsersPanel({ csrfToken, me }: { csrfToken: string | null; me: MeRespons
 
   return (
     <div className="users-panel-grid grid gap-6 xl:grid-cols-[0.8fr_1.2fr]">
+      <AdminUserEditHost csrfToken={csrfToken} />
       <form onSubmit={createUser} className="user-create-card rounded-[32px] border border-white/10 bg-black/25 p-6">
         <p className="admin-eyebrow text-xs uppercase tracking-[0.32em] text-cyan-300">Create User</p>
         <div className="mt-4 space-y-4">
@@ -1419,6 +1432,13 @@ function UsersPanel({ csrfToken, me }: { csrfToken: string | null; me: MeRespons
                     Move Pending
                   </button>
                 )}
+                <button
+                  type="button"
+                  onClick={() => openAdminUserEditor(selectedUser)}
+                  className="rounded-2xl border border-cyan-300/25 px-4 py-2 text-sm text-cyan-100 transition hover:bg-cyan-400/10"
+                >
+                  Edit User
+                </button>
                 <button
                   type="button"
                   onClick={() => setSelectedUserDisabled(!selectedUser.disabled)}
