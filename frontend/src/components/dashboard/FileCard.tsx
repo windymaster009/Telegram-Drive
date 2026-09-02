@@ -24,6 +24,7 @@ interface FileCardProps {
 export function FileCard({ file, onDelete, onDownload, onPreview, isSelected, onClick, onContextMenu, onDrop, onDragStart, onDragEnd, activeFolderId, height, onToggleSelection, canWrite = true }: FileCardProps) {
     const isFolder = file.type === 'folder';
     const [isDragOver, setIsDragOver] = useState(false);
+    const displayDate = file.created_at?.trim() ? file.created_at.trim().slice(0, 10) : '';
 
     return (
         <div
@@ -102,7 +103,9 @@ export function FileCard({ file, onDelete, onDownload, onPreview, isSelected, on
                     >
                         {file.name}
                     </h3>
-                    <p className="mt-1 truncate text-xs text-telegram-subtext">{file.sizeStr}</p>
+                    <p className="mt-1 truncate text-xs text-telegram-subtext">
+                        {file.sizeStr}{displayDate ? ` · ${displayDate}` : ''}
+                    </p>
                 </div>
 
                 {/* Selection Checkmark */}

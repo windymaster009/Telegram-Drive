@@ -1,7 +1,11 @@
 use crate::commands::utils::resolve_read_peer;
 use crate::nas::crypto::now_ts;
 use crate::nas::models::ApprovalStatus;
-use crate::nas::{api::configure_api, state::NasState};
+use crate::nas::{
+    api::configure_api,
+    file_metadata::configure_api as configure_file_metadata_api,
+    state::NasState,
+};
 use actix_cors::Cors;
 use actix_web::{
     error::{ErrorBadGateway, ErrorGatewayTimeout},
@@ -876,6 +880,7 @@ pub async fn start_server(
             .app_data(state_data.clone())
             .app_data(token_data.clone())
             .configure(configure_api)
+            .configure(configure_file_metadata_api)
             .service(stream_media)
             .service(api_stream_media)
             .service(local_preview_media)
