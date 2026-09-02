@@ -31,6 +31,15 @@ export type GoogleDesktopLoginStatus =
   | { status: "error"; error: string }
   | { status: "complete"; response: LoginResponse };
 
+export type FileMetadataOverride = {
+  display_name?: string | null;
+  display_date?: string | null;
+  updated_at: number;
+  updated_by: string;
+};
+
+type FileMetadataMap = Record<string, FileMetadataOverride>;
+
 export const nasSession = {
   getAccessToken: () => localStorage.getItem(TOKEN_STORAGE_KEY),
   setAccessToken: (token: string) => localStorage.setItem(TOKEN_STORAGE_KEY, token),
@@ -90,6 +99,37 @@ async function requestWithTimeout<T>(
   }
 }
 
+function folderQuery(folderId: number | null) {
+  const params = new URLSearchParams();
+  if (folderId !== null) params.set("folder_id", String(folderId));
+  const query = params.toString();
+  return query ? `?${query}` : "";
+}
+
+async function getFileMetadataMap(folderId: number | null): Promise<FileMetadataMap> {
+  return request<FileMetadataMap>(`/api/telegram/file-metadata${folderQuery(folderId)}`);
+}
+
+async function mergeFileMetadata(files: TelegramFile[], folderId: number | null): Promise<TelegramFile[]> {
+  if (files.length === 0) return files;
+
+  try {
+    const metadata = await getFileMetadataMap(folderId);
+    return files.map((file) => {
+      const override = metadata[String(file.id)];
+      if (!override) return file;
+      return {
+        ...file,
+        name: override.display_name || file.name,
+        created_at: override.display_date || file.created_at,
+      };
+    });
+  } catch {
+    // Keep file browsing usable during rolling deployments or if metadata is unavailable.
+    return files;
+  }
+}
+
 export const nasApi = {
   systemStatus: () => request<SystemStatus>("/api/system/status"),
   bootstrap: (payload: { username: string; password: string; display_name: string }) =>
@@ -113,12 +153,28 @@ export const nasApi = {
     if (accessToken) params.set("access_token", accessToken);
     return `${getApiBaseUrl()}/api/telegram/stream/${encodeURIComponent(folder)}/${encodeURIComponent(String(messageId))}?${params.toString()}`;
   },
-  listTelegramFiles: (folderId: number | null) => {
-    const params = new URLSearchParams();
-    if (folderId !== null) params.set("folder_id", String(folderId));
-    const suffix = params.toString() ? `?${params.toString()}` : "";
-    return requestWithTimeout<TelegramFile[]>(`/api/telegram/files${suffix}`, {}, undefined, 50000);
+  listTelegramFiles: async (folderId: number | null) => {
+    const files = await requestWithTimeout<TelegramFile[]>(
+      `/api/telegram/files${folderQuery(folderId)}`,
+      {},
+      undefined,
+      50000
+    );
+    return mergeFileMetadata(files, folderId);
   },
+  getFileMetadata: async (folderId: number | null, messageId: number) => {
+    const metadata = await getFileMetadataMap(folderId);
+    return metadata[String(messageId)] || null;
+  },
+  updateFileMetadata: (
+    folderId: number | null,
+    messageId: number,
+    payload: { display_name?: string; display_date?: string }
+  ) =>
+    request<{ ok: boolean; metadata: FileMetadataOverride | null }>(
+      `/api/telegram/files/${messageId}/metadata${folderQuery(folderId)}`,
+      { method: "PUT", body: JSON.stringify(payload) }
+    ),
   scanTelegramFolders: () => request<TelegramFolder[]>("/api/telegram/folders/scan"),
   createTelegramFolder: (name: string) =>
     request<TelegramFolder>("/api/telegram/folders", { method: "POST", body: JSON.stringify({ name }) }),
@@ -133,9 +189,7 @@ export const nasApi = {
   verifyTelegramFolderPassword: (folderId: number, password: string) =>
     request<{ ok: boolean }>(`/api/telegram/folders/${folderId}/verify-password`, { method: "POST", body: JSON.stringify({ password }) }),
   deleteTelegramFile: (messageId: number, folderId: number | null) => {
-    const params = new URLSearchParams();
-    if (folderId !== null) params.set("folder_id", String(folderId));
-    const suffix = params.toString() ? `?${params.toString()}` : "";
+    const suffix = folderQuery(folderId);
     return request<{ ok: boolean }>(`/api/telegram/files/${messageId}${suffix}`, { method: "DELETE" });
   },
   moveTelegramFiles: (payload: { message_ids: number[]; source_folder_id: number | null; target_folder_id: number | null }) =>
@@ -184,5 +238,5 @@ export const nasApi = {
     request<{ ok: boolean }>("/api/admin/owner/auth/logout", { method: "POST", body: JSON.stringify({}) }, csrfToken),
   clearOwnerConfig: (csrfToken: string) =>
     request<{ ok: boolean }>("/api/admin/owner/config", { method: "DELETE" }, csrfToken),
-  listAuditLogs: () => request<AuditEntry[]>("/api/admin/audit-logs"),
+  listAuditLogs: () => request<AuditEntry[]>("/api/admin/audit-logs", {}, undefined),
 };
