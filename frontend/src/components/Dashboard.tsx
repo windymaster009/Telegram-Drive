@@ -24,6 +24,7 @@ import { PdfViewer } from './dashboard/PdfViewer';
 import { FolderActionModal } from './dashboard/FolderActionModal';
 import { FolderUnlockModal } from './dashboard/FolderUnlockModal';
 import { SelectFolderState } from './dashboard/SelectFolderState';
+import { FileMetadataEditHost } from './dashboard/FileMetadataEditHost';
 
 // Hooks
 import { useTelegramConnection } from '../hooks/useTelegramConnection';
@@ -534,6 +535,7 @@ export function Dashboard({ onLogout, permissions, allowFolderManagement = true,
         >
 
             {canWrite && <ExternalDropBlocker onUploadClick={handleManualUpload} />}
+            <FileMetadataEditHost />
 
             <AnimatePresence>
                 {folderTransferMode && (
