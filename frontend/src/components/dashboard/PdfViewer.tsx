@@ -3,12 +3,16 @@ import { X, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, Maximize } from 'lucide-
 // Use the legacy build — the modern build uses Map.getOrInsertComputed()
 // which isn't available in Tauri's WebKit WebView
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
+import PdfWorker from 'pdfjs-dist/legacy/build/pdf.worker.mjs?worker';
 import type { TelegramFile } from '@shared/telegram';
 import { nasApi } from '../../lib/nasApi';
 
-// Use Vite's ?url suffix to get a properly bundled asset URL for the worker
-import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.mjs?url';
-pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
+// Let Vite construct the worker rather than handing PDF.js a .mjs asset URL.
+// This avoids PDF.js falling back to a dynamic "fake worker" import when nginx
+// or a browser rejects the emitted .mjs module worker.
+if (typeof Worker !== 'undefined' && !pdfjsLib.GlobalWorkerOptions.workerPort) {
+    pdfjsLib.GlobalWorkerOptions.workerPort = new PdfWorker();
+}
 
 interface PdfViewerProps {
     file: TelegramFile;
