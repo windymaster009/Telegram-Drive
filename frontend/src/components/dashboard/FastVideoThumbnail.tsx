@@ -131,7 +131,7 @@ async function nextPaint() {
 
 function captureVideoFrame(video: HTMLVideoElement): Promise<Blob | null> {
     return new Promise((resolve) => {
-        if (!video.videoWidth || !video.videoHeight || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+        if (!video.videoWidth || !video.videoHeight || video.readyState < video.HAVE_CURRENT_DATA) {
             resolve(null);
             return;
         }
