@@ -145,11 +145,7 @@ function captureVideoFrame(video: HTMLVideoElement): Promise<Blob | null> {
 
         try {
             context.drawImage(video, 0, 0, width, height);
-            canvas.toBlob(
-                (blob) => resolve(blob),
-                'image/webp',
-                0.72
-            );
+            canvas.toBlob((blob) => resolve(blob), 'image/webp', 0.72);
         } catch {
             resolve(null);
         }
@@ -180,14 +176,13 @@ export function FastVideoThumbnail({
     file: TelegramFile;
     activeFolderId?: number | null;
 }) {
-    const videoRef = useRef<HTMLVideoElement>(null);
     const releaseRef = useRef<(() => void) | null>(null);
     const objectUrlRef = useRef<string | null>(null);
+    const capturingRef = useRef(false);
     const [posterUrl, setPosterUrl] = useState<string | null>(null);
     const [canLoadVideo, setCanLoadVideo] = useState(false);
     const [failed, setFailed] = useState(false);
     const [videoReady, setVideoReady] = useState(false);
-    const [capturing, setCapturing] = useState(false);
 
     const streamUrl = useMemo(
         () => nasApi.streamUrl(activeFolderId ?? null, file.id),
@@ -205,18 +200,29 @@ export function FastVideoThumbnail({
 
     useEffect(() => {
         let cancelled = false;
-        const slot = acquirePreviewSlot();
+        let slot: ReturnType<typeof acquirePreviewSlot> | null = null;
 
-        readCachedThumbnail(cacheKey).then(async (cached) => {
+        if (objectUrlRef.current) {
+            URL.revokeObjectURL(objectUrlRef.current);
+            objectUrlRef.current = null;
+        }
+        setPosterUrl(null);
+        setCanLoadVideo(false);
+        setFailed(false);
+        setVideoReady(false);
+        capturingRef.current = false;
+
+        const start = async () => {
+            const cached = await readCachedThumbnail(cacheKey);
             if (cancelled) return;
             if (cached) {
-                slot.cancel();
                 const url = URL.createObjectURL(cached);
                 objectUrlRef.current = url;
                 setPosterUrl(url);
                 return;
             }
 
+            slot = acquirePreviewSlot();
             const release = await slot.promise;
             if (cancelled) {
                 release();
@@ -224,11 +230,13 @@ export function FastVideoThumbnail({
             }
             releaseRef.current = release;
             setCanLoadVideo(true);
-        });
+        };
+
+        void start();
 
         return () => {
             cancelled = true;
-            slot.cancel();
+            slot?.cancel();
             releaseSlot();
             if (objectUrlRef.current) {
                 URL.revokeObjectURL(objectUrlRef.current);
@@ -247,8 +255,8 @@ export function FastVideoThumbnail({
     }, [canLoadVideo, failed, posterUrl]);
 
     const finishFrame = async (video: HTMLVideoElement) => {
-        if (capturing || posterUrl || failed) return;
-        setCapturing(true);
+        if (capturingRef.current || posterUrl || failed) return;
+        capturingRef.current = true;
         try {
             const blob = await captureVideoFrame(video);
             if (blob) {
@@ -262,7 +270,7 @@ export function FastVideoThumbnail({
             }
         } finally {
             releaseSlot();
-            setCapturing(false);
+            capturingRef.current = false;
         }
     };
 
@@ -288,7 +296,6 @@ export function FastVideoThumbnail({
             {!videoReady && <LoadingPlaceholder filename={file.name} />}
             {canLoadVideo && (
                 <video
-                    ref={videoRef}
                     src={streamUrl}
                     muted
                     playsInline
