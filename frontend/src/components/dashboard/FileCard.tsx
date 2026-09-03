@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { Folder, Eye, Trash2 } from 'lucide-react';
 import type { TelegramFile } from '@shared/telegram';
 import { FilePreview } from './FilePreview';
+import { FastVideoThumbnail } from './FastVideoThumbnail';
 
 interface FileCardProps {
     file: TelegramFile;
@@ -21,8 +22,11 @@ interface FileCardProps {
     canWrite?: boolean;
 }
 
+const VIDEO_EXTENSIONS = /\.(mp4|mov|m4v|webm|avi|mkv)$/i;
+
 export function FileCard({ file, onDelete, onDownload, onPreview, isSelected, onClick, onContextMenu, onDrop, onDragStart, onDragEnd, activeFolderId, height, onToggleSelection, canWrite = true }: FileCardProps) {
     const isFolder = file.type === 'folder';
+    const isVideo = !isFolder && VIDEO_EXTENSIONS.test(file.name);
     const [isDragOver, setIsDragOver] = useState(false);
     const displayDate = file.created_at?.trim() ? file.created_at.trim().slice(0, 10) : '';
 
@@ -78,12 +82,14 @@ export function FileCard({ file, onDelete, onDownload, onPreview, isSelected, on
                 ${isDragOver ? 'ring-2 ring-telegram-primary bg-telegram-primary/20 scale-105' : ''}`}
                 style={height ? { height: `${height}px` } : { aspectRatio: '4/3' }}
             >
-                {/* Drive-style visual preview. Heavy previews are lazy-loaded near the viewport. */}
+                {/* Drive-style visual preview. Video cards use a throttled persistent thumbnail cache. */}
                 <div className="relative min-h-0 flex-1 overflow-hidden bg-telegram-bg/35">
                     {isFolder ? (
                         <div className="absolute inset-0 flex items-center justify-center p-3">
                             <Folder className="h-14 w-14 text-telegram-primary" />
                         </div>
+                    ) : isVideo ? (
+                        <FastVideoThumbnail file={file} activeFolderId={activeFolderId ?? null} />
                     ) : (
                         <FilePreview file={file} activeFolderId={activeFolderId ?? null} />
                     )}
