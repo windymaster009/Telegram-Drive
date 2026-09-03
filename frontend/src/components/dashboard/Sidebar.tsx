@@ -49,24 +49,34 @@ export function Sidebar({
         }
     };
 
+    const chooseFolder = (id: number | null) => {
+        setActiveFolderId(id);
+        onCloseMobile?.();
+    };
+
     return (
         <>
-            {mobileOpen && <div className="fixed inset-0 z-30 bg-black/50 md:hidden" onClick={onCloseMobile} />}
+            {mobileOpen && (
+                <div
+                    className="fixed inset-0 z-30 bg-black/65 backdrop-blur-[2px] md:hidden"
+                    onClick={onCloseMobile}
+                />
+            )}
             <aside
-                className={`fixed inset-y-0 left-0 z-40 flex w-[85vw] max-w-72 flex-col border-r border-telegram-border bg-telegram-surface transition-transform duration-200 md:static md:z-auto md:w-64 md:max-w-none md:translate-x-0 ${mobileOpen ? 'translate-x-0' : '-translate-x-full'}`}
+                className={`fixed inset-y-0 left-0 z-40 flex w-[82vw] max-w-80 flex-col border-r border-telegram-border bg-telegram-surface shadow-2xl transition-transform duration-200 md:static md:z-auto md:w-64 md:max-w-none md:translate-x-0 md:shadow-none ${mobileOpen ? 'translate-x-0' : '-translate-x-full'}`}
                 onClick={e => e.stopPropagation()}
             >
-                <div className="flex items-center justify-between gap-2 px-4 pb-4 pt-[calc(env(safe-area-inset-top,0px)+20px)]">
+                <div className="flex items-center justify-between gap-2 border-b border-telegram-border/60 px-4 pb-4 pt-[calc(env(safe-area-inset-top,0px)+16px)] md:border-b-0 md:pt-5">
                     <div className="flex min-w-0 items-center gap-2">
                         <img src="/logo.svg" className="w-8 h-8 drop-shadow-lg" alt="Logo" />
                         <span className="truncate font-bold text-lg tracking-tight text-telegram-text">Telegram Drive</span>
                     </div>
                     <button
                         onClick={onCloseMobile}
-                        className="rounded-md p-2 text-telegram-subtext transition hover:bg-telegram-hover hover:text-telegram-text md:hidden"
+                        className="grid h-10 w-10 place-items-center rounded-xl text-telegram-subtext transition hover:bg-telegram-hover hover:text-telegram-text md:hidden"
                         title="Close folders"
                     >
-                        <X className="h-4 w-4" />
+                        <X className="h-5 w-5" />
                     </button>
                 </div>
 
@@ -76,7 +86,7 @@ export function Sidebar({
                             icon={HardDrive}
                             label="Saved Messages"
                             active={activeFolderId === null}
-                            onClick={() => setActiveFolderId(null)}
+                            onClick={() => chooseFolder(null)}
                             onDrop={(e: React.DragEvent) => onDrop(e, null)}
                             folderId={null}
                         />
@@ -89,7 +99,7 @@ export function Sidebar({
                             folderIcon={folder.icon}
                             ownerName={folder.owner_name || folder.owner_id || undefined}
                             active={activeFolderId === folder.id}
-                            onClick={() => setActiveFolderId(folder.id)}
+                            onClick={() => chooseFolder(folder.id)}
                             onDrop={(e: React.DragEvent) => onDrop(e, folder.id)}
                             canManage={allowFolderManagement || Boolean(folder.can_manage)}
                             isPasswordProtected={Boolean(folder.is_password_protected)}
@@ -109,7 +119,7 @@ export function Sidebar({
                                 <input
                                     autoFocus
                                     type="text"
-                                    className="w-full rounded bg-white/10 px-2 py-1 text-sm text-white focus:outline-none focus:ring-1 focus:ring-telegram-primary"
+                                    className="w-full rounded-xl bg-white/10 px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-telegram-primary"
                                     placeholder="Folder Name"
                                     value={newFolderName}
                                     onChange={e => setNewFolderName(e.target.value)}
@@ -120,7 +130,7 @@ export function Sidebar({
                         ) : (
                             <button
                                 onClick={() => setShowNewFolderInput(true)}
-                                className="w-full rounded-lg border border-dashed border-telegram-border px-3 py-2 text-sm font-medium text-telegram-subtext transition-colors hover:bg-telegram-hover hover:text-telegram-text"
+                                className="w-full rounded-xl border border-dashed border-telegram-border px-3 py-2.5 text-sm font-medium text-telegram-subtext transition-colors hover:bg-telegram-hover hover:text-telegram-text"
                             >
                                 <span className="flex items-center gap-3">
                                     <Plus className="w-4 h-4" />
@@ -131,7 +141,7 @@ export function Sidebar({
                     </div>
                 )}
 
-                <div className="border-t border-telegram-border p-4">
+                <div className="border-t border-telegram-border p-4 pb-[max(16px,env(safe-area-inset-bottom))]">
                     <div className="flex items-center gap-2 text-xs text-telegram-subtext">
                         <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></div>
                         <span>{isConnected ? 'Connected to Telegram' : 'Disconnected from Telegram'}</span>
@@ -142,7 +152,7 @@ export function Sidebar({
                             <button
                                 onClick={onSync}
                                 disabled={isSyncing}
-                                className={`flex-1 flex items-center justify-center gap-2 rounded-lg bg-blue-500/10 px-3 py-2 text-xs font-medium text-blue-500 transition-colors hover:bg-blue-500/20 hover:text-blue-600 ${isSyncing ? 'cursor-not-allowed opacity-50' : ''}`}
+                                className={`flex-1 flex items-center justify-center gap-2 rounded-xl bg-blue-500/10 px-3 py-2.5 text-xs font-medium text-blue-500 transition-colors hover:bg-blue-500/20 hover:text-blue-600 ${isSyncing ? 'cursor-not-allowed opacity-50' : ''}`}
                                 title="Scan for existing folders"
                             >
                                 <RefreshCw className={`w-3 h-3 ${isSyncing ? 'animate-spin' : ''}`} />
@@ -151,7 +161,7 @@ export function Sidebar({
                         )}
                         <button
                             onClick={onLogout}
-                            className="flex-1 flex items-center justify-center gap-2 rounded-lg bg-red-500/10 px-3 py-2 text-xs font-medium text-red-500 transition-colors hover:bg-red-500/20 hover:text-red-600"
+                            className="flex-1 flex items-center justify-center gap-2 rounded-xl bg-red-500/10 px-3 py-2.5 text-xs font-medium text-red-500 transition-colors hover:bg-red-500/20 hover:text-red-600"
                             title="Sign Out"
                         >
                             <LogOut className="w-3 h-3" />
