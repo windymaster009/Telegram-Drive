@@ -7,9 +7,10 @@ const MAX_ACTIVE_VIDEO_PREVIEWS = 2;
 const DB_NAME = 'telegram-drive-preview-cache';
 const DB_VERSION = 1;
 const STORE_NAME = 'video-thumbnails';
+const CACHE_VERSION = 'v2';
 const MAX_CACHED_THUMBNAILS = 240;
 const THUMBNAIL_MAX_WIDTH = 480;
-const THUMBNAIL_TIMEOUT_MS = 20_000;
+const THUMBNAIL_TIMEOUT_MS = 24_000;
 
 type CachedThumbnail = {
     key: string;
@@ -124,9 +125,13 @@ async function writeCachedThumbnail(key: string, blob: Blob) {
     }
 }
 
+async function nextPaint() {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+}
+
 function captureVideoFrame(video: HTMLVideoElement): Promise<Blob | null> {
     return new Promise((resolve) => {
-        if (!video.videoWidth || !video.videoHeight) {
+        if (!video.videoWidth || !video.videoHeight || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
             resolve(null);
             return;
         }
@@ -145,7 +150,7 @@ function captureVideoFrame(video: HTMLVideoElement): Promise<Blob | null> {
 
         try {
             context.drawImage(video, 0, 0, width, height);
-            canvas.toBlob((blob) => resolve(blob), 'image/webp', 0.72);
+            canvas.toBlob((blob) => resolve(blob), 'image/webp', 0.76);
         } catch {
             resolve(null);
         }
@@ -163,10 +168,16 @@ function LoadingPlaceholder({ filename }: { filename: string }) {
 
 function PlayOverlay() {
     return (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/5">
-            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-black/55 text-sm text-white shadow-lg backdrop-blur-sm">▶</div>
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-gradient-to-t from-black/20 via-transparent to-transparent">
+            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-black/60 text-sm text-white shadow-lg backdrop-blur-sm">▶</div>
         </div>
     );
+}
+
+function thumbnailSeekTarget(video: HTMLVideoElement) {
+    if (!Number.isFinite(video.duration) || video.duration <= 0.25) return 0;
+    if (video.duration <= 2) return Math.max(0.12, video.duration * 0.35);
+    return Math.min(2, Math.max(0.7, video.duration * 0.05));
 }
 
 export function FastVideoThumbnail({
@@ -179,6 +190,8 @@ export function FastVideoThumbnail({
     const releaseRef = useRef<(() => void) | null>(null);
     const objectUrlRef = useRef<string | null>(null);
     const capturingRef = useRef(false);
+    const targetTimeRef = useRef(0);
+    const seekAttemptedRef = useRef(false);
     const [posterUrl, setPosterUrl] = useState<string | null>(null);
     const [canLoadVideo, setCanLoadVideo] = useState(false);
     const [failed, setFailed] = useState(false);
@@ -189,7 +202,7 @@ export function FastVideoThumbnail({
         [activeFolderId, file.id]
     );
     const cacheKey = useMemo(
-        () => `${activeFolderId ?? 'home'}:${file.id}:${file.size || 0}`,
+        () => `${CACHE_VERSION}:${activeFolderId ?? 'home'}:${file.id}:${file.size || 0}`,
         [activeFolderId, file.id, file.size]
     );
 
@@ -211,6 +224,8 @@ export function FastVideoThumbnail({
         setFailed(false);
         setVideoReady(false);
         capturingRef.current = false;
+        targetTimeRef.current = 0;
+        seekAttemptedRef.current = false;
 
         const start = async () => {
             const cached = await readCachedThumbnail(cacheKey);
@@ -258,6 +273,7 @@ export function FastVideoThumbnail({
         if (capturingRef.current || posterUrl || failed) return;
         capturingRef.current = true;
         try {
+            await nextPaint();
             const blob = await captureVideoFrame(video);
             if (blob) {
                 const url = URL.createObjectURL(blob);
@@ -265,6 +281,9 @@ export function FastVideoThumbnail({
                 objectUrlRef.current = url;
                 setPosterUrl(url);
                 void writeCachedThumbnail(cacheKey, blob);
+                video.pause();
+                video.removeAttribute('src');
+                video.load();
             } else {
                 setVideoReady(true);
             }
@@ -274,10 +293,37 @@ export function FastVideoThumbnail({
         }
     };
 
+    const prepareFrame = (video: HTMLVideoElement) => {
+        if (seekAttemptedRef.current) return;
+        seekAttemptedRef.current = true;
+        const target = thumbnailSeekTarget(video);
+        targetTimeRef.current = target;
+
+        if (target <= 0.01) {
+            void finishFrame(video);
+            return;
+        }
+
+        try {
+            video.currentTime = target;
+        } catch {
+            void finishFrame(video);
+        }
+    };
+
+    const maybeCaptureLoadedFrame = (video: HTMLVideoElement) => {
+        if (!seekAttemptedRef.current) return;
+        const target = targetTimeRef.current;
+        if (target <= 0.01 || Math.abs(video.currentTime - target) < 0.35) {
+            void finishFrame(video);
+        }
+    };
+
     if (failed) {
         return (
             <div className="absolute inset-0 flex items-center justify-center bg-telegram-bg/25 p-3">
                 <FileTypeIcon filename={file.name} size="lg" />
+                <PlayOverlay />
             </div>
         );
     }
@@ -285,7 +331,7 @@ export function FastVideoThumbnail({
     if (posterUrl) {
         return (
             <>
-                <img src={posterUrl} alt="" className="absolute inset-0 h-full w-full object-cover" />
+                <img src={posterUrl} alt={`${file.name} thumbnail`} className="absolute inset-0 h-full w-full object-cover" />
                 <PlayOverlay />
             </>
         );
@@ -300,8 +346,10 @@ export function FastVideoThumbnail({
                     muted
                     playsInline
                     preload="metadata"
-                    onLoadedData={(event) => void finishFrame(event.currentTarget)}
-                    onCanPlay={(event) => void finishFrame(event.currentTarget)}
+                    onLoadedMetadata={(event) => prepareFrame(event.currentTarget)}
+                    onSeeked={(event) => void finishFrame(event.currentTarget)}
+                    onLoadedData={(event) => maybeCaptureLoadedFrame(event.currentTarget)}
+                    onCanPlay={(event) => maybeCaptureLoadedFrame(event.currentTarget)}
                     onError={() => {
                         releaseSlot();
                         setFailed(true);
