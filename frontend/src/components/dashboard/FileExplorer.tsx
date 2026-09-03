@@ -30,18 +30,24 @@ interface FileExplorerProps {
     canWrite?: boolean;
 }
 
-
 function useGridColumns(containerRef: React.RefObject<HTMLDivElement | null>) {
-    const [columns, setColumns] = useState(4);
+    const initialMobile = typeof window !== 'undefined' && window.innerWidth <= 700;
+    const [columns, setColumns] = useState(initialMobile ? 2 : 4);
     const [containerWidth, setContainerWidth] = useState(800);
+    const [isMobile, setIsMobile] = useState(initialMobile);
 
     useEffect(() => {
         if (!containerRef.current) return;
 
         const updateColumns = () => {
             const width = containerRef.current?.clientWidth || 800;
+            const mobile = window.innerWidth <= 700;
             setContainerWidth(width);
-            if (width < 640) setColumns(2);
+            setIsMobile(mobile);
+
+            // Mobile browsers sometimes report a much wider content box because of
+            // device scaling. Pin phones to two columns so cards stay readable.
+            if (mobile) setColumns(2);
             else if (width < 768) setColumns(3);
             else if (width < 1024) setColumns(4);
             else if (width < 1280) setColumns(5);
@@ -51,10 +57,14 @@ function useGridColumns(containerRef: React.RefObject<HTMLDivElement | null>) {
         updateColumns();
         const observer = new ResizeObserver(updateColumns);
         observer.observe(containerRef.current);
-        return () => observer.disconnect();
+        window.addEventListener('resize', updateColumns);
+        return () => {
+            observer.disconnect();
+            window.removeEventListener('resize', updateColumns);
+        };
     }, [containerRef]);
 
-    return { columns, containerWidth };
+    return { columns, containerWidth, isMobile };
 }
 
 const isTextMessagesFile = (file: TelegramFile) => file.id === -1 && file.name === 'Text messages.txt';
@@ -69,12 +79,14 @@ export function FileExplorer({
     const [contextMenu, setContextMenu] = useState<{ x: number; y: number; file: TelegramFile } | null>(null);
 
     const parentRef = useRef<HTMLDivElement>(null);
-    const { columns, containerWidth } = useGridColumns(parentRef);
+    const { columns, containerWidth, isMobile } = useGridColumns(parentRef);
 
-    const GAP = 6;
-    const cardWidth = (containerWidth - (GAP * (columns - 1))) / columns;
-    const cardHeight = cardWidth * 0.75; // aspect-[4/3]
-    const rowHeight = Math.max(cardHeight + GAP, 150);
+    const GAP = isMobile ? 10 : 6;
+    const cardWidth = Math.max(0, (containerWidth - (GAP * (columns - 1))) / columns);
+    const cardHeight = isMobile
+        ? Math.max(176, Math.min(224, cardWidth * 1.08))
+        : cardWidth * 0.75;
+    const rowHeight = Math.max(cardHeight + GAP, isMobile ? 186 : 150);
 
     const handleContextMenu = useCallback((e: React.MouseEvent, file: TelegramFile) => {
         e.preventDefault();
@@ -110,30 +122,28 @@ export function FileExplorer({
         onPreview(file, sortedFiles);
     }, [onPreview, sortedFiles]);
 
-
     const gridRows = useMemo(() => {
         const rows: (TelegramFile | 'upload')[][] = [];
-        const itemsWithUpload: (TelegramFile | 'upload')[] = canWrite ? [...sortedFiles, 'upload'] : [...sortedFiles];
+        const itemsWithUpload: (TelegramFile | 'upload')[] = canWrite && !isMobile
+            ? [...sortedFiles, 'upload']
+            : [...sortedFiles];
         for (let i = 0; i < itemsWithUpload.length; i += columns) {
             rows.push(itemsWithUpload.slice(i, i + columns));
         }
         return rows;
-    }, [sortedFiles, columns, canWrite]);
-
+    }, [sortedFiles, columns, canWrite, isMobile]);
 
     const listItems = useMemo(() => {
         return activeFolderId === null && canWrite ? [...sortedFiles, 'upload' as const] : sortedFiles;
     }, [sortedFiles, activeFolderId, canWrite]);
 
-
     const gridVirtualizer = useVirtualizer({
         count: gridRows.length,
         getScrollElement: () => parentRef.current,
         estimateSize: useCallback(() => rowHeight, [rowHeight]),
-        overscan: 2,
+        overscan: isMobile ? 3 : 2,
         gap: GAP,
     });
-
 
     useEffect(() => {
         gridVirtualizer.measure();
@@ -168,11 +178,11 @@ export function FileExplorer({
                 <div className="w-8 h-8 border-4 border-telegram-primary border-t-transparent rounded-full animate-spin"></div>
                 Loading your files...
             </div>
-        )
+        );
     }
 
     if (error) {
-        return <div className="flex flex-1 items-center justify-center p-4 text-red-400 sm:p-6">Error loading files</div>
+        return <div className="flex flex-1 items-center justify-center p-4 text-red-400 sm:p-6">Error loading files</div>;
     }
 
     if (files.length === 0) {
@@ -193,29 +203,27 @@ export function FileExplorer({
         >
             {viewMode === 'grid' ? (
                 <>
-
-                    <div className="mb-4 flex flex-wrap items-center gap-2 text-xs text-telegram-subtext">
-                        <span>Sort by:</span>
+                    <div className="mb-3 flex flex-nowrap items-center gap-1 overflow-x-auto pb-1 text-xs text-telegram-subtext sm:mb-4 sm:gap-2">
+                        <span className="shrink-0 pr-1">Sort:</span>
                         <button
                             onClick={() => handleSort('name')}
-                            className={`px-2 py-1 rounded flex items-center gap-1 hover:bg-white/5 ${sortField === 'name' ? 'text-telegram-primary' : ''}`}
+                            className={`flex shrink-0 items-center gap-1 rounded-lg px-2.5 py-1.5 hover:bg-white/5 ${sortField === 'name' ? 'bg-white/5 text-telegram-primary' : ''}`}
                         >
                             Name <SortIcon field="name" />
                         </button>
                         <button
                             onClick={() => handleSort('size')}
-                            className={`px-2 py-1 rounded flex items-center gap-1 hover:bg-white/5 ${sortField === 'size' ? 'text-telegram-primary' : ''}`}
+                            className={`flex shrink-0 items-center gap-1 rounded-lg px-2.5 py-1.5 hover:bg-white/5 ${sortField === 'size' ? 'bg-white/5 text-telegram-primary' : ''}`}
                         >
                             Size <SortIcon field="size" />
                         </button>
                         <button
                             onClick={() => handleSort('date')}
-                            className={`px-2 py-1 rounded flex items-center gap-1 hover:bg-white/5 ${sortField === 'date' ? 'text-telegram-primary' : ''}`}
+                            className={`flex shrink-0 items-center gap-1 rounded-lg px-2.5 py-1.5 hover:bg-white/5 ${sortField === 'date' ? 'bg-white/5 text-telegram-primary' : ''}`}
                         >
                             Date <SortIcon field="date" />
                         </button>
                     </div>
-
 
                     <div
                         className="relative w-full"
@@ -273,6 +281,16 @@ export function FileExplorer({
                             );
                         })}
                     </div>
+
+                    {isMobile && canWrite && (
+                        <button
+                            onClick={(e) => { e.stopPropagation(); onManualUpload(); }}
+                            className="mt-3 flex min-h-24 w-full items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-telegram-border bg-telegram-surface/40 px-4 text-telegram-subtext transition hover:border-telegram-primary hover:text-telegram-primary"
+                        >
+                            <Plus className="h-6 w-6" />
+                            <span className="text-sm font-semibold">Upload File</span>
+                        </button>
+                    )}
                 </>
             ) : (
                 <div className="flex flex-col w-full">
@@ -288,7 +306,6 @@ export function FileExplorer({
                             Date <SortIcon field="date" />
                         </button>
                     </div>
-
 
                     <div
                         className="relative w-full"
@@ -366,5 +383,5 @@ export function FileExplorer({
                 />
             )}
         </div>
-    )
+    );
 }
