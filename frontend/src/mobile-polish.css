@@ -1,0 +1,207 @@
+/* Focused mobile overrides loaded after the main application styles. */
+@media (max-width: 700px) {
+  .premium-admin {
+    min-height: 100dvh;
+  }
+
+  .admin-topbar {
+    height: 64px;
+    gap: 10px;
+    padding: 0 12px;
+  }
+
+  .admin-menu-button {
+    width: 38px;
+    height: 38px;
+    border-radius: 12px;
+  }
+
+  .admin-page-title h1 {
+    font-size: 18px;
+    line-height: 1.15;
+  }
+
+  .admin-top-actions {
+    gap: 6px;
+  }
+
+  .admin-signout {
+    width: 38px;
+    height: 38px;
+    justify-content: center;
+    padding: 0;
+    border-radius: 12px;
+  }
+
+  .admin-content {
+    padding: 12px;
+  }
+
+  .overview-page,
+  .sessions-page,
+  .audit-page {
+    width: 100%;
+  }
+
+  .overview-hero,
+  .panel-intro {
+    gap: 11px;
+    margin-bottom: 16px;
+  }
+
+  .overview-hero h2,
+  .panel-intro h2 {
+    margin-top: 5px;
+    font-size: 22px;
+    line-height: 1.15;
+  }
+
+  .overview-hero p,
+  .panel-intro p {
+    margin-top: 6px;
+    font-size: 12px;
+    line-height: 1.55;
+  }
+
+  .premium-primary {
+    width: 100%;
+    min-height: 44px;
+    justify-content: center;
+    border-radius: 14px;
+  }
+
+  .stat-grid,
+  .mini-stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .stat-card {
+    min-height: 124px;
+    padding: 14px;
+    border-radius: 16px;
+  }
+
+  .stat-icon {
+    top: 12px;
+    right: 12px;
+    width: 32px;
+    height: 32px;
+    border-radius: 10px;
+  }
+
+  .stat-icon svg {
+    width: 15px;
+  }
+
+  .stat-card > span {
+    max-width: calc(100% - 36px);
+    font-size: 10px;
+    line-height: 1.35;
+  }
+
+  .stat-card > strong {
+    margin-top: 18px;
+    font-size: 23px;
+    line-height: 1;
+  }
+
+  .stat-card > small {
+    margin-top: 7px;
+    font-size: 9px;
+    line-height: 1.4;
+  }
+
+  .mini-stat-grid > div {
+    min-width: 0;
+    gap: 9px;
+    padding: 12px;
+    border-radius: 14px;
+  }
+
+  .mini-stat-grid strong {
+    font-size: 16px;
+  }
+
+  .overview-lower-grid {
+    grid-template-columns: 1fr;
+    gap: 10px;
+    margin-top: 10px;
+  }
+
+  .section-card {
+    padding: 16px;
+    border-radius: 16px;
+  }
+
+  .section-heading h3 {
+    font-size: 15px;
+  }
+
+  .activity-row {
+    grid-template-columns: 34px minmax(0, 1fr);
+    gap: 9px;
+    padding: 11px 0;
+  }
+
+  .activity-icon {
+    width: 32px;
+    height: 32px;
+  }
+
+  .activity-row time {
+    display: none;
+  }
+
+  .quick-actions button {
+    min-height: 42px;
+    padding: 10px 12px;
+    border-radius: 12px;
+  }
+
+  .system-card {
+    padding: 15px;
+    border-radius: 16px;
+  }
+
+  .admin-sidebar {
+    width: min(320px, 88vw);
+    padding: max(18px, env(safe-area-inset-top)) 14px max(16px, env(safe-area-inset-bottom));
+  }
+
+  .admin-brand {
+    padding: 0 6px 20px;
+  }
+
+  .admin-brand-mark {
+    width: 40px;
+    height: 40px;
+    border-radius: 13px;
+  }
+
+  .admin-side-nav button {
+    min-height: 44px;
+    padding: 10px 11px;
+    border-radius: 12px;
+  }
+}
+
+@media (max-width: 380px) {
+  .admin-content {
+    padding: 10px;
+  }
+
+  .stat-grid,
+  .mini-stat-grid {
+    gap: 8px;
+  }
+
+  .stat-card {
+    min-height: 118px;
+    padding: 12px;
+  }
+
+  .stat-card > strong {
+    font-size: 21px;
+  }
+}
