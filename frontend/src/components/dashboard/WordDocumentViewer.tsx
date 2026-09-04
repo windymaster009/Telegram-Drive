@@ -5,17 +5,18 @@ import { nasApi } from '../../lib/nasApi';
 interface WordDocumentViewerProps {
     file: TelegramFile;
     activeFolderId: number | null;
+    streamUrlOverride?: string;
 }
 
 const MAX_DOCX_PREVIEW_BYTES = 40 * 1024 * 1024;
 
-export function WordDocumentViewer({ file, activeFolderId }: WordDocumentViewerProps) {
+export function WordDocumentViewer({ file, activeFolderId, streamUrlOverride }: WordDocumentViewerProps) {
     const containerRef = useRef<HTMLDivElement | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const streamUrl = useMemo(
-        () => nasApi.streamUrl(activeFolderId, file.id),
-        [activeFolderId, file.id]
+        () => streamUrlOverride || nasApi.streamUrl(activeFolderId, file.id),
+        [activeFolderId, file.id, streamUrlOverride]
     );
 
     useEffect(() => {

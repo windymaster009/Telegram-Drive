@@ -10,6 +10,7 @@ const LazyXlsxViewer = lazy(async () => {
 interface ExcelWorkbookViewerProps {
     file: TelegramFile;
     activeFolderId: number | null;
+    streamUrlOverride?: string;
 }
 
 const MAX_EXCEL_PREVIEW_BYTES = 50 * 1024 * 1024;
@@ -24,12 +25,12 @@ function LoadingState({ label = 'Loading workbook...' }: { label?: string }) {
     );
 }
 
-export function ExcelWorkbookViewer({ file, activeFolderId }: ExcelWorkbookViewerProps) {
+export function ExcelWorkbookViewer({ file, activeFolderId, streamUrlOverride }: ExcelWorkbookViewerProps) {
     const [buffer, setBuffer] = useState<ArrayBuffer | null>(null);
     const [error, setError] = useState<string | null>(null);
     const streamUrl = useMemo(
-        () => nasApi.streamUrl(activeFolderId, file.id),
-        [activeFolderId, file.id]
+        () => streamUrlOverride || nasApi.streamUrl(activeFolderId, file.id),
+        [activeFolderId, file.id, streamUrlOverride]
     );
 
     useEffect(() => {
