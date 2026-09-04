@@ -40,7 +40,8 @@ function buildPublicUrl(token: string) {
   const configured = import.meta.env.VITE_PUBLIC_WEB_URL?.replace(/\/$/, '');
   const browserOrigin = /^https?:$/.test(window.location.protocol) ? window.location.origin : '';
   const base = configured || browserOrigin;
-  return base ? `${base}/share/${encodeURIComponent(token)}` : `/share/${encodeURIComponent(token)}`;
+  const suffix = `/?share=${encodeURIComponent(token)}`;
+  return base ? `${base}${suffix}` : suffix;
 }
 
 export function ShareLinkHost() {
