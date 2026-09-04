@@ -18,9 +18,7 @@ use crate::commands::fs::get_files_inner;
 use crate::models::FileMetadata;
 use crate::server::StreamTokenData;
 
-use super::crypto::{
-    decrypt_secret, encrypt_secret, generate_token, now_ts, sha256_hex,
-};
+use super::crypto::{decrypt_secret, encrypt_secret, generate_token, now_ts, sha256_hex};
 use super::models::{AccessLevel, AppRole, AppUser};
 use super::state::NasState;
 
@@ -59,7 +57,7 @@ struct FileMetadataPatchRequest {
 
 type FolderMetadataMap = HashMap<String, FileMetadataOverride>;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 enum PublicShareKind {
     File,
@@ -354,7 +352,7 @@ async fn create_public_share(
     let token = generate_token();
     let record = PublicShareRecord {
         token_hash: sha256_hex(&token),
-        kind: payload.kind.clone(),
+        kind: payload.kind,
         folder_id: payload.folder_id,
         message_id: payload.message_id,
         label: label.clone(),
@@ -569,18 +567,22 @@ async fn public_share_media(
 
     let status = StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let mut response = HttpResponse::build(status);
-    for name in [
-        reqwest::header::CONTENT_TYPE,
-        reqwest::header::CONTENT_LENGTH,
-        reqwest::header::CONTENT_RANGE,
-        reqwest::header::ACCEPT_RANGES,
+    for (downstream_name, upstream_name) in [
+        (header::CONTENT_TYPE, reqwest::header::CONTENT_TYPE),
+        (header::CONTENT_LENGTH, reqwest::header::CONTENT_LENGTH),
+        (header::CONTENT_RANGE, reqwest::header::CONTENT_RANGE),
+        (header::ACCEPT_RANGES, reqwest::header::ACCEPT_RANGES),
     ] {
-        if let Some(value) = upstream.headers().get(&name).and_then(|value| value.to_str().ok()) {
-            response.insert_header((name.as_str(), value));
+        if let Some(value) = upstream
+            .headers()
+            .get(&upstream_name)
+            .and_then(|value| value.to_str().ok())
+        {
+            response.insert_header((downstream_name, value));
         }
     }
     response
-        .insert_header(("Cache-Control", "private, max-age=60"))
+        .insert_header(("Cache-Control", "private, no-store"))
         .insert_header(("X-Robots-Tag", "noindex, nofollow"));
 
     if query.download.unwrap_or(false) {
@@ -803,10 +805,6 @@ async fn load_public_share_record(
     }
     if !share_expiry_active(record.expires_at) {
         let _ = state.db.delete_secret(key).await;
-        let _ = state
-            .db
-            .delete_secret(public_share_target_key(&record.kind, record.folder_id, record.message_id))
-            .await;
         return Ok(None);
     }
     Ok(Some(record))
@@ -890,10 +888,12 @@ fn normalize_text(value: Option<String>) -> Option<String> {
 fn safe_download_name(name: &str) -> String {
     let cleaned = name
         .chars()
-        .map(|ch| match ch {
-            '"' | '\\' | '\r' | '\n' => '_',
-            ch if ch.is_control() => '_',
-            ch => ch,
+        .map(|ch| {
+            if ch.is_ascii() && !ch.is_control() && ch != '"' && ch != '\\' {
+                ch
+            } else {
+                '_'
+            }
         })
         .collect::<String>();
     if cleaned.trim().is_empty() {
