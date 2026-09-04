@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { Eye, HardDrive, Trash2, FolderOpen, Pencil, Play, FileText } from 'lucide-react';
+import { Eye, HardDrive, Trash2, FolderOpen, Pencil, Play, FileText, Share2 } from 'lucide-react';
 import type { TelegramFile } from '@shared/telegram';
 import { isMediaFile, isPdfFile } from '../../utils';
 import { openFileMetadataEditor } from './FileMetadataEditHost';
+import { openShareLinkEditor } from './ShareLinkHost';
 
 interface ContextMenuProps {
     x: number;
@@ -19,38 +20,40 @@ export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPrevi
     const [adjustedPos, setAdjustedPos] = useState({ x, y });
     const menuRef = useRef<HTMLDivElement>(null);
 
-    // Adjust position to stay in bounds
     useEffect(() => {
         if (menuRef.current) {
             const rect = menuRef.current.getBoundingClientRect();
             let newX = x;
             let newY = y;
-
-            if (x + rect.width > window.innerWidth) {
-                newX = x - rect.width;
-            }
-            if (y + rect.height > window.innerHeight) {
-                newY = y - rect.height;
-            }
+            if (x + rect.width > window.innerWidth) newX = x - rect.width;
+            if (y + rect.height > window.innerHeight) newY = y - rect.height;
             setAdjustedPos({ x: newX, y: newY });
         }
     }, [x, y]);
 
-    // Close on outside click
     useEffect(() => {
         const handleClick = () => onClose();
         const handleResize = () => onClose();
-
         window.addEventListener('click', handleClick);
         window.addEventListener('resize', handleResize);
-        window.addEventListener('contextmenu', handleClick); // Close if right click elsewhere
-
+        window.addEventListener('contextmenu', handleClick);
         return () => {
             window.removeEventListener('click', handleClick);
             window.removeEventListener('resize', handleResize);
             window.removeEventListener('contextmenu', handleClick);
         };
     }, [onClose]);
+
+    const handleShare = () => {
+        const isFolder = file.type === 'folder';
+        openShareLinkEditor({
+            kind: isFolder ? 'folder' : 'file',
+            folderId: isFolder ? file.id : (file.folder_id ?? null),
+            messageId: isFolder ? null : file.id,
+            label: file.name,
+        });
+        onClose();
+    };
 
     return (
         <div
@@ -67,20 +70,11 @@ export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPrevi
             {file.type !== 'folder' && (
                 <button onClick={onPreview} className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-text hover:bg-telegram-hover rounded transition-colors text-left w-full">
                     {isMediaFile(file.name, file.mime_type) ? (
-                        <>
-                            <Play className="w-4 h-4 text-telegram-primary" />
-                            Play
-                        </>
+                        <><Play className="w-4 h-4 text-telegram-primary" />Play</>
                     ) : isPdfFile(file.name) ? (
-                        <>
-                            <FileText className="w-4 h-4 text-red-400" />
-                            View PDF
-                        </>
+                        <><FileText className="w-4 h-4 text-red-400" />View PDF</>
                     ) : (
-                        <>
-                            <Eye className="w-4 h-4 text-blue-500" />
-                            Preview
-                        </>
+                        <><Eye className="w-4 h-4 text-blue-500" />Preview</>
                     )}
                 </button>
             )}
@@ -96,6 +90,13 @@ export function ContextMenu({ x, y, file, onClose, onDownload, onDelete, onPrevi
                 <HardDrive className="w-4 h-4 text-green-500" />
                 Download
             </button>
+
+            {canWrite && (
+                <button onClick={handleShare} className="flex items-center gap-2 px-2 py-1.5 text-sm text-telegram-text hover:bg-telegram-hover rounded transition-colors text-left w-full">
+                    <Share2 className="w-4 h-4 text-cyan-400" />
+                    Share
+                </button>
+            )}
 
             {canWrite && file.type !== 'folder' && (
                 <button
