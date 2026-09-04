@@ -4,7 +4,7 @@ use argon2::{
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2,
 };
-use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine as _};
+use base64::{engine::general_purpose::{STANDARD_NO_PAD, URL_SAFE_NO_PAD}, Engine as _};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
@@ -34,7 +34,7 @@ pub fn verify_password(password: &str, hash: &str) -> Result<bool, String> {
 pub fn generate_token() -> String {
     let mut bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut bytes);
-    STANDARD_NO_PAD.encode(bytes)
+    URL_SAFE_NO_PAD.encode(bytes)
 }
 
 pub fn sha256_hex(input: &str) -> String {
