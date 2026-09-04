@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { KeyRound, LockKeyhole, Palette, Pencil, Trash2 } from 'lucide-react';
+import { KeyRound, LockKeyhole, Palette, Pencil, Share2, Trash2 } from 'lucide-react';
+import { openShareLinkEditor } from './ShareLinkHost';
 
 interface SidebarItemProps {
     icon: React.ElementType;
@@ -18,12 +19,6 @@ interface SidebarItemProps {
     folderId: number | null;
 }
 
-/**
- * SidebarItem - Pure DOM event-based drop handling
- *
- * With Tauri's dragDropEnabled: false, DOM events work reliably.
- * This component handles internal file moves via standard React drag events.
- */
 export function SidebarItem({
     icon: Icon,
     folderIcon,
@@ -37,7 +32,8 @@ export function SidebarItem({
     onChangeIcon,
     onRename,
     onSetPassword,
-    onDelete
+    onDelete,
+    folderId,
 }: SidebarItemProps) {
     const [isOver, setIsOver] = useState(false);
     const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
@@ -60,6 +56,8 @@ export function SidebarItem({
         setMenuPos(null);
         action?.();
     };
+
+    const canShare = canManage && folderId !== null;
 
     return (
         <>
@@ -89,10 +87,10 @@ export function SidebarItem({
                     e.preventDefault();
                     e.stopPropagation();
                     setIsOver(false);
-                    if (onDrop) onDrop(e);
+                    onDrop?.(e);
                 }}
                 onContextMenu={(e) => {
-                    if (onDelete || onRename || onChangeIcon || onSetPassword) {
+                    if (onDelete || onRename || onChangeIcon || onSetPassword || canShare) {
                         e.preventDefault();
                         e.stopPropagation();
                         setMenuPos({ x: e.clientX, y: e.clientY });
@@ -128,6 +126,18 @@ export function SidebarItem({
                         <div className="truncate">{label}</div>
                         {ownerName && <div className="mt-0.5 truncate">Created by: {ownerName}</div>}
                     </div>
+                    {canShare && (
+                        <MenuButton
+                            icon={Share2}
+                            label="Share folder"
+                            onClick={() => runAction(() => openShareLinkEditor({
+                                kind: 'folder',
+                                folderId,
+                                messageId: null,
+                                label,
+                            }))}
+                        />
+                    )}
                     {canManage && onChangeIcon && (
                         <MenuButton icon={Palette} label="Change folder icon" onClick={() => runAction(onChangeIcon)} />
                     )}
@@ -146,7 +156,7 @@ export function SidebarItem({
                 </div>
             )}
         </>
-    )
+    );
 }
 
 function MenuButton({
