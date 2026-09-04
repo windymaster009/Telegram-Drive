@@ -1,0 +1,12 @@
+body.public-share-mode,
+body.public-share-mode #root {
+  width: 100%;
+  min-height: 100vh;
+  height: auto;
+  overflow: auto;
+  overscroll-behavior-y: contain;
+}
+
+body.public-share-mode {
+  background: #050810;
+}
