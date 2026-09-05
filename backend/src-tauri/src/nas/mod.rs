@@ -1,6 +1,9 @@
 pub mod api;
 pub mod crypto;
 pub mod db;
+#[path = "metadata_api.rs"]
+pub mod legacy_file_metadata;
+#[path = "share_links.rs"]
 pub mod file_metadata;
 pub mod models;
 pub mod state;
