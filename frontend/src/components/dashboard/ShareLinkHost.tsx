@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Check, Clock3, Copy, Link2, Share2, Trash2, X } from 'lucide-react';
+import { Check, Clock3, Copy, KeyRound, Link2, Share2, Trash2, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { publicShareApi, type PublicShareKind } from '../../lib/publicShareApi';
 
@@ -48,6 +48,8 @@ export function ShareLinkHost() {
   const [target, setTarget] = useState<ShareTarget | null>(null);
   const [preset, setPreset] = useState<ExpiryPreset>('1h');
   const [customExpiry, setCustomExpiry] = useState('');
+  const [password, setPassword] = useState('');
+  const [hasPassword, setHasPassword] = useState(false);
   const [token, setToken] = useState<string | null>(null);
   const [expiresAt, setExpiresAt] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
@@ -61,6 +63,8 @@ export function ShareLinkHost() {
       setTarget(detail);
       setPreset('1h');
       setCustomExpiry('');
+      setPassword('');
+      setHasPassword(false);
       setToken(null);
       setExpiresAt(null);
       setCopied(false);
@@ -86,19 +90,46 @@ export function ShareLinkHost() {
     try {
       setLoading(true);
       const expiry = expiryFromPreset(preset, customExpiry);
-      const result = await publicShareApi.create({
-        kind: target.kind,
-        folder_id: target.folderId,
-        message_id: target.kind === 'file' ? target.messageId ?? null : null,
-        label: target.label,
-        expires_at: expiry,
-      });
+      const passwordValue = password.trim() || undefined;
+      const result = token
+        ? await publicShareApi.update(token, {
+            expires_at: expiry,
+            password: passwordValue,
+          })
+        : await publicShareApi.create({
+            kind: target.kind,
+            folder_id: target.folderId,
+            message_id: target.kind === 'file' ? target.messageId ?? null : null,
+            label: target.label,
+            expires_at: expiry,
+            password: passwordValue,
+          });
       setToken(result.token);
       setExpiresAt(result.expires_at);
+      setHasPassword(result.has_password);
+      setPassword('');
       setCopied(false);
-      toast.success(token ? 'Share expiration updated' : 'Share link created');
+      toast.success(token ? 'Share settings updated' : 'Share link ready');
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Could not create share link');
+      toast.error(error instanceof Error ? error.message : 'Could not save share link');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const removePassword = async () => {
+    if (!token) return;
+    try {
+      setLoading(true);
+      const result = await publicShareApi.update(token, {
+        expires_at: expiresAt,
+        remove_password: true,
+      });
+      setHasPassword(result.has_password);
+      setPassword('');
+      toast.success('Share password removed');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not remove password');
     } finally {
       setLoading(false);
     }
@@ -123,6 +154,8 @@ export function ShareLinkHost() {
       await publicShareApi.revoke(token);
       setToken(null);
       setExpiresAt(null);
+      setHasPassword(false);
+      setPassword('');
       toast.success('Share link revoked');
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Could not revoke share link');
@@ -134,7 +167,7 @@ export function ShareLinkHost() {
   return (
     <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" onMouseDown={() => setTarget(null)}>
       <div
-        className="w-full max-w-lg overflow-hidden rounded-3xl border border-white/10 bg-[#111c29] text-white shadow-2xl"
+        className="max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-3xl border border-white/10 bg-[#111c29] text-white shadow-2xl"
         onMouseDown={(event) => event.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-4 border-b border-white/10 px-5 py-5 sm:px-6">
@@ -178,10 +211,37 @@ export function ShareLinkHost() {
                 className="mt-2 w-full rounded-xl border border-white/10 bg-[#0c1520] px-3 py-3 text-sm text-white outline-none focus:border-cyan-400/60"
               />
             )}
-            <p className="mt-2 text-xs leading-5 text-slate-500">
-              Anyone with the link can preview and download. They cannot upload, edit, move, or delete anything.
-            </p>
           </div>
+
+          <div>
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <label className="flex items-center gap-2 text-sm font-medium text-slate-200">
+                <KeyRound className="h-4 w-4 text-cyan-300" /> Optional password
+              </label>
+              {hasPassword && <span className="rounded-full bg-emerald-400/10 px-2 py-1 text-[11px] font-semibold text-emerald-300">Protected</span>}
+            </div>
+            <input
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              placeholder={hasPassword ? 'Leave blank to keep current password' : 'Leave blank for link-only access'}
+              className="w-full rounded-xl border border-white/10 bg-[#0c1520] px-3 py-3 text-sm text-white outline-none placeholder:text-slate-600 focus:border-cyan-400/60"
+            />
+            <div className="mt-2 flex items-start justify-between gap-3">
+              <p className="text-xs leading-5 text-slate-500">
+                The password is never placed in the URL. Visitors unlock the share before previews or downloads are enabled.
+              </p>
+              {token && hasPassword && (
+                <button onClick={removePassword} disabled={loading} className="shrink-0 text-xs font-medium text-red-300 hover:text-red-200 disabled:opacity-50">
+                  Remove
+                </button>
+              )}
+            </div>
+          </div>
+
+          <p className="rounded-2xl border border-white/8 bg-black/15 px-4 py-3 text-xs leading-5 text-slate-500">
+            Visitors can preview and download only. They cannot upload, edit, move, delete, or browse outside the shared item.
+          </p>
 
           {token && (
             <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/[0.06] p-4">
@@ -192,9 +252,9 @@ export function ShareLinkHost() {
                   {copied ? <Check className="h-4 w-4 text-emerald-300" /> : <Copy className="h-4 w-4" />}
                 </button>
               </div>
-              <div className="mt-2 flex items-center gap-2 text-xs text-slate-400">
-                <Link2 className="h-3.5 w-3.5" />
-                {formatExpiry(expiresAt)}
+              <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400">
+                <span className="inline-flex items-center gap-1.5"><Link2 className="h-3.5 w-3.5" />{formatExpiry(expiresAt)}</span>
+                {hasPassword && <span className="inline-flex items-center gap-1.5 text-emerald-300"><KeyRound className="h-3.5 w-3.5" />Password required</span>}
               </div>
             </div>
           )}
@@ -218,7 +278,7 @@ export function ShareLinkHost() {
               className="flex items-center justify-center gap-2 rounded-xl bg-cyan-400 px-5 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:opacity-60"
             >
               <Share2 className="h-4 w-4" />
-              {loading ? 'Saving...' : token ? 'Update expiration' : 'Create share link'}
+              {loading ? 'Saving...' : token ? 'Update share' : 'Create share link'}
             </button>
           </div>
         </div>
