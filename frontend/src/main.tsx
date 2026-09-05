@@ -2,7 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import { ShareLinkHost } from "./components/dashboard/ShareLinkHost";
-import { PublicSharePage } from "./components/share/PublicSharePage";
+import { PublicSharePageV2 } from "./components/share/PublicSharePageV2";
 import "./mobile-polish.css";
 import "./public-share.css";
 
@@ -17,7 +17,7 @@ document.body.classList.toggle("public-share-mode", Boolean(shareToken));
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     {shareToken ? (
-      <PublicSharePage token={shareToken} />
+      <PublicSharePageV2 token={shareToken} />
     ) : (
       <>
         <App />
