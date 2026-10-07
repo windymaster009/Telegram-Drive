@@ -60,6 +60,677 @@ enum LocalPreviewSource {
     Tail { path: PathBuf, start_offset: u64 },
 }
 
+
+fn stream_cache_max_bytes() -> u64 {
+    std::env::var("TELEGRAM_DRIVE_STREAM_CACHE_MAX_BYTES")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(STREAM_CACHE_DEFAULT_MAX_BYTES)
+}
+
+fn stream_cache_key(folder_id: Option<i64>, message_id: i32) -> String {
+    let folder = folder_id
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "home".to_string());
+    format!("{}_{}", folder, message_id)
+}
+
+async fn prune_stream_cache(state: &NasState, preserve: &[PathBuf]) {
+    let cache_dir = state.app_data_dir.join("stream-cache");
+    if std::fs::create_dir_all(&cache_dir).is_err() {
+        return;
+    }
+
+    let mut protected = preserve.iter().cloned().collect::<HashSet<_>>();
+    {
+        let jobs = state.stream_cache_jobs.lock().await;
+        for job in jobs.values() {
+            protected.insert(job.path.clone());
+            if let Some(path) = &job.tail_path {
+                protected.insert(path.clone());
+            }
+        }
+    }
+
+    let read_dir = match std::fs::read_dir(&cache_dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+
+    let mut files = Vec::new();
+    let mut total = 0u64;
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        let len = metadata.len();
+        let modified = metadata
+            .modified()
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        total = total.saturating_add(len);
+        files.push((path, modified, len));
+    }
+
+    let limit = stream_cache_max_bytes();
+    if total <= limit {
+        return;
+    }
+
+    files.sort_by_key(|(_, modified, _)| *modified);
+    for (path, _, len) in files {
+        if total <= limit {
+            break;
+        }
+        if protected.contains(&path) {
+            continue;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            total = total.saturating_sub(len);
+            log::info!("Stream cache pruned: {}", path.display());
+        }
+    }
+}
+
+fn schedule_stream_cache_job_cleanup(
+    jobs: Arc<tokio::sync::Mutex<std::collections::HashMap<String, StreamCacheJob>>>,
+    key: String,
+) {
+    actix_web::rt::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(120)).await;
+        let mut guard = jobs.lock().await;
+        let should_remove = guard
+            .get(&key)
+            .map(|job| {
+                job.complete.load(Ordering::SeqCst)
+                    || job.error.try_lock().map(|err| err.is_some()).unwrap_or(false)
+            })
+            .unwrap_or(false);
+        if should_remove {
+            guard.remove(&key);
+        }
+    });
+}
+
+async fn ensure_stream_cache_job(
+    state: &NasState,
+    client: grammers_client::Client,
+    media: Media,
+    folder_id: Option<i64>,
+    message_id: i32,
+    total_size: u64,
+    is_video: bool,
+) -> Result<StreamCacheJob, String> {
+    let key = stream_cache_key(folder_id, message_id);
+
+    {
+        let jobs = state.stream_cache_jobs.lock().await;
+        if let Some(existing) = jobs.get(&key) {
+            if existing.total_size == total_size {
+                return Ok(existing.clone());
+            }
+        }
+    }
+
+    let cache_dir = state.app_data_dir.join("stream-cache");
+    std::fs::create_dir_all(&cache_dir).map_err(|err| err.to_string())?;
+
+    let front_path = cache_dir.join(format!("{}.cache", key));
+    let tail_start = if is_video && total_size > STREAM_CACHE_TAIL_BYTES {
+        let raw_start = total_size.saturating_sub(STREAM_CACHE_TAIL_BYTES);
+        let chunk = STREAM_CHUNK_SIZE as u64;
+        Some((raw_start / chunk) * chunk)
+    } else {
+        None
+    };
+    let tail_path = tail_start.map(|_| cache_dir.join(format!("{}.tail", key)));
+
+    let mut preserve = vec![front_path.clone()];
+    if let Some(path) = &tail_path {
+        preserve.push(path.clone());
+    }
+    prune_stream_cache(state, &preserve).await;
+
+    let chunk = STREAM_CHUNK_SIZE as u64;
+    let mut front_len = std::fs::metadata(&front_path)
+        .map(|metadata| metadata.len().min(total_size))
+        .unwrap_or(0);
+    if front_len < total_size {
+        let aligned = (front_len / chunk) * chunk;
+        if aligned != front_len {
+            if let Ok(file) = std::fs::OpenOptions::new().write(true).open(&front_path) {
+                let _ = file.set_len(aligned);
+            }
+            front_len = aligned;
+        }
+    }
+
+    let front_complete = front_len >= total_size;
+    let mut tail_len = 0u64;
+    let mut tail_complete = tail_start.is_none();
+
+    if let (Some(path), Some(start)) = (&tail_path, tail_start) {
+        let tail_total = total_size.saturating_sub(start);
+        tail_len = std::fs::metadata(path)
+            .map(|metadata| metadata.len().min(tail_total))
+            .unwrap_or(0);
+        if tail_len < tail_total {
+            let aligned = (tail_len / chunk) * chunk;
+            if aligned != tail_len {
+                if let Ok(file) = std::fs::OpenOptions::new().write(true).open(path) {
+                    let _ = file.set_len(aligned);
+                }
+                tail_len = aligned;
+            }
+        }
+        tail_complete = tail_len >= tail_total;
+    }
+
+    let job = StreamCacheJob {
+        path: front_path.clone(),
+        tail_path: tail_path.clone(),
+        tail_start,
+        total_size,
+        downloaded: Arc::new(AtomicU64::new(front_len)),
+        tail_downloaded: Arc::new(AtomicU64::new(tail_len)),
+        complete: Arc::new(AtomicBool::new(front_complete)),
+        tail_complete: Arc::new(AtomicBool::new(tail_complete)),
+        error: Arc::new(tokio::sync::Mutex::new(None)),
+    };
+
+    {
+        let mut jobs = state.stream_cache_jobs.lock().await;
+        jobs.insert(key.clone(), job.clone());
+    }
+
+    if front_complete {
+        schedule_stream_cache_job_cleanup(state.stream_cache_jobs.clone(), key);
+        return Ok(job);
+    }
+
+    let front_job = job.clone();
+    let front_client = client.clone();
+    let front_media = media.clone();
+    let front_read_gate = state.telegram.read_gate.clone();
+    let front_jobs = state.stream_cache_jobs.clone();
+    let front_key = key.clone();
+    actix_web::rt::spawn(async move {
+        let result = async {
+            let _permit = front_read_gate
+                .acquire_owned()
+                .await
+                .map_err(|_| "Telegram read limiter is unavailable".to_string())?;
+
+            let start = front_job.downloaded.load(Ordering::SeqCst);
+            let skip_chunks = (start / STREAM_CHUNK_SIZE as u64) as i32;
+            let mut file = tokio::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&front_job.path)
+                .await
+                .map_err(|err| err.to_string())?;
+            let mut download_iter = front_client
+                .iter_download(&front_media)
+                .chunk_size(STREAM_CHUNK_SIZE)
+                .skip_chunks(skip_chunks);
+
+            while front_job.downloaded.load(Ordering::SeqCst) < total_size {
+                let Some(chunk_result) = download_iter.next().await.transpose() else {
+                    break;
+                };
+                let mut bytes =
+                    chunk_result.map_err(|err| format!("Stream cache download failed: {}", err))?;
+                let downloaded = front_job.downloaded.load(Ordering::SeqCst);
+                let remaining = total_size.saturating_sub(downloaded);
+                if bytes.len() as u64 > remaining {
+                    bytes.truncate(remaining as usize);
+                }
+                file.write_all(&bytes).await.map_err(|err| err.to_string())?;
+                front_job
+                    .downloaded
+                    .fetch_add(bytes.len() as u64, Ordering::SeqCst);
+            }
+
+            file.flush().await.map_err(|err| err.to_string())?;
+            if front_job.downloaded.load(Ordering::SeqCst) >= total_size {
+                front_job.complete.store(true, Ordering::SeqCst);
+                Ok(())
+            } else {
+                Err("Telegram stream cache ended before the file was complete".to_string())
+            }
+        }
+        .await;
+
+        if let Err(err) = result {
+            log::warn!("Stream cache front download failed for {}: {}", front_key, err);
+            *front_job.error.lock().await = Some(err);
+        } else {
+            log::info!("Stream cache complete for {}", front_key);
+        }
+
+        schedule_stream_cache_job_cleanup(front_jobs, front_key);
+    });
+
+    if let (Some(tail_path), Some(tail_start)) = (tail_path, tail_start) {
+        if !tail_complete {
+            let tail_job = job.clone();
+            let tail_client = client;
+            let tail_media = media;
+            let tail_read_gate = state.telegram.read_gate.clone();
+            let tail_key = key.clone();
+            actix_web::rt::spawn(async move {
+                let result = async {
+                    let _permit = tail_read_gate
+                        .acquire_owned()
+                        .await
+                        .map_err(|_| "Telegram read limiter is unavailable".to_string())?;
+
+                    let local_start = tail_job.tail_downloaded.load(Ordering::SeqCst);
+                    let global_start = tail_start.saturating_add(local_start);
+                    let skip_chunks = (global_start / STREAM_CHUNK_SIZE as u64) as i32;
+                    let mut file = tokio::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&tail_path)
+                        .await
+                        .map_err(|err| err.to_string())?;
+                    let mut download_iter = tail_client
+                        .iter_download(&tail_media)
+                        .chunk_size(STREAM_CHUNK_SIZE)
+                        .skip_chunks(skip_chunks);
+                    let tail_total = total_size.saturating_sub(tail_start);
+
+                    while tail_job.tail_downloaded.load(Ordering::SeqCst) < tail_total {
+                        let Some(chunk_result) = download_iter.next().await.transpose() else {
+                            break;
+                        };
+                        let mut bytes = chunk_result
+                            .map_err(|err| format!("Stream cache tail download failed: {}", err))?;
+                        let downloaded = tail_job.tail_downloaded.load(Ordering::SeqCst);
+                        let remaining = tail_total.saturating_sub(downloaded);
+                        if bytes.len() as u64 > remaining {
+                            bytes.truncate(remaining as usize);
+                        }
+                        file.write_all(&bytes).await.map_err(|err| err.to_string())?;
+                        tail_job
+                            .tail_downloaded
+                            .fetch_add(bytes.len() as u64, Ordering::SeqCst);
+                    }
+
+                    file.flush().await.map_err(|err| err.to_string())?;
+                    tail_job.tail_complete.store(true, Ordering::SeqCst);
+                    Ok::<(), String>(())
+                }
+                .await;
+
+                if let Err(err) = result {
+                    log::warn!("Stream cache tail download failed for {}: {}", tail_key, err);
+                    tail_job.tail_complete.store(true, Ordering::SeqCst);
+                }
+            });
+        }
+    }
+
+    Ok(job)
+}
+
+#[derive(Clone)]
+enum StreamCacheSource {
+    Front { path: PathBuf, start_offset: u64 },
+    Tail { path: PathBuf, start_offset: u64 },
+}
+
+async fn wait_for_stream_cache_source(
+    job: &StreamCacheJob,
+    start: u64,
+) -> Result<StreamCacheSource, String> {
+    let deadline = tokio::time::Instant::now() + STREAM_CACHE_RANGE_WAIT;
+
+    loop {
+        let front_downloaded = job.downloaded.load(Ordering::SeqCst).min(job.total_size);
+        if start < front_downloaded {
+            return Ok(StreamCacheSource::Front {
+                path: job.path.clone(),
+                start_offset: 0,
+            });
+        }
+
+        if let (Some(path), Some(tail_start)) = (&job.tail_path, job.tail_start) {
+            if start >= tail_start {
+                let tail_downloaded = job.tail_downloaded.load(Ordering::SeqCst);
+                let tail_end = tail_start
+                    .saturating_add(tail_downloaded)
+                    .min(job.total_size);
+                if start < tail_end {
+                    return Ok(StreamCacheSource::Tail {
+                        path: path.clone(),
+                        start_offset: tail_start,
+                    });
+                }
+            }
+        }
+
+        if let Some(err) = job.error.lock().await.clone() {
+            return Err(err);
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "Timed out waiting for cached bytes at offset {}",
+                start
+            ));
+        }
+
+        tokio::time::sleep(Duration::from_millis(60)).await;
+    }
+}
+
+fn cached_source_available(job: &StreamCacheJob, source: &StreamCacheSource) -> u64 {
+    match source {
+        StreamCacheSource::Front { .. } => {
+            job.downloaded.load(Ordering::SeqCst).min(job.total_size)
+        }
+        StreamCacheSource::Tail { start_offset, .. } => start_offset
+            .saturating_add(job.tail_downloaded.load(Ordering::SeqCst))
+            .min(job.total_size),
+    }
+}
+
+fn cached_source_complete(job: &StreamCacheJob, source: &StreamCacheSource) -> bool {
+    match source {
+        StreamCacheSource::Front { .. } => job.complete.load(Ordering::SeqCst),
+        StreamCacheSource::Tail { .. } => job.tail_complete.load(Ordering::SeqCst),
+    }
+}
+
+async fn cached_stream_response(
+    req: HttpRequest,
+    state: &NasState,
+    client: grammers_client::Client,
+    media: Media,
+    folder_id: Option<i64>,
+    message_id: i32,
+    total_size: u64,
+    mime: String,
+) -> Result<HttpResponse, String> {
+    let range = parse_local_preview_range(req.headers().get(header::RANGE), total_size)
+        .ok_or_else(|| "Invalid byte range".to_string())?;
+    let (start, requested_end, had_range) = range;
+
+    let job = ensure_stream_cache_job(
+        state,
+        client,
+        media,
+        folder_id,
+        message_id,
+        total_size,
+        mime.starts_with("video/"),
+    )
+    .await?;
+
+    if req.method() == Method::HEAD {
+        return Ok(HttpResponse::Ok()
+            .insert_header(("Content-Type", mime))
+            .insert_header(("Content-Length", total_size.to_string()))
+            .insert_header(("Accept-Ranges", "bytes"))
+            .insert_header(("Cache-Control", "private, max-age=3600"))
+            .insert_header(("X-Telegram-Drive-Cache", "enabled"))
+            .finish());
+    }
+
+    let source = wait_for_stream_cache_source(&job, start).await?;
+    let end = requested_end.unwrap_or(total_size.saturating_sub(1));
+    let content_len = end.saturating_sub(start).saturating_add(1);
+    let status = if had_range {
+        StatusCode::PARTIAL_CONTENT
+    } else {
+        StatusCode::OK
+    };
+
+    let stream_job = job.clone();
+    let stream_source = source.clone();
+    let stream = async_stream::stream! {
+        let (path, source_offset) = match &stream_source {
+            StreamCacheSource::Front { path, start_offset } => (path.clone(), *start_offset),
+            StreamCacheSource::Tail { path, start_offset } => (path.clone(), *start_offset),
+        };
+
+        let mut file = match tokio::fs::File::open(&path).await {
+            Ok(file) => file,
+            Err(err) => {
+                yield Err::<web::Bytes, actix_web::Error>(
+                    ErrorBadGateway(format!("Could not open stream cache: {}", err))
+                );
+                return;
+            }
+        };
+
+        if let Err(err) = file.seek(SeekFrom::Start(start.saturating_sub(source_offset))).await {
+            yield Err::<web::Bytes, actix_web::Error>(
+                ErrorBadGateway(format!("Could not seek stream cache: {}", err))
+            );
+            return;
+        }
+
+        let mut pos = start;
+        let mut last_progress = tokio::time::Instant::now();
+        let mut last_available = cached_source_available(&stream_job, &stream_source);
+
+        while pos <= end {
+            let available = cached_source_available(&stream_job, &stream_source);
+            if available > last_available {
+                last_available = available;
+                last_progress = tokio::time::Instant::now();
+            }
+
+            if pos >= available {
+                if cached_source_complete(&stream_job, &stream_source) {
+                    break;
+                }
+
+                if let Some(err) = stream_job.error.lock().await.clone() {
+                    yield Err::<web::Bytes, actix_web::Error>(ErrorBadGateway(err));
+                    break;
+                }
+
+                if tokio::time::Instant::now().duration_since(last_progress)
+                    > Duration::from_secs(45)
+                {
+                    yield Err::<web::Bytes, actix_web::Error>(
+                        ErrorGatewayTimeout("Timed out waiting for Telegram cache data")
+                    );
+                    break;
+                }
+
+                tokio::time::sleep(Duration::from_millis(60)).await;
+                continue;
+            }
+
+            let available_bytes = available
+                .saturating_sub(pos)
+                .min(end.saturating_sub(pos).saturating_add(1));
+            let read_len = available_bytes.min(STREAM_CACHE_READ_CHUNK_SIZE as u64) as usize;
+            let mut buffer = vec![0u8; read_len];
+
+            match file.read(&mut buffer).await {
+                Ok(0) => {
+                    tokio::time::sleep(Duration::from_millis(40)).await;
+                }
+                Ok(read) => {
+                    buffer.truncate(read);
+                    pos = pos.saturating_add(read as u64);
+                    yield Ok::<_, actix_web::Error>(web::Bytes::from(buffer));
+                }
+                Err(err) => {
+                    yield Err::<web::Bytes, actix_web::Error>(
+                        ErrorBadGateway(format!("Stream cache read failed: {}", err))
+                    );
+                    break;
+                }
+            }
+        }
+    };
+
+    let mut response = HttpResponse::build(status);
+    response
+        .insert_header(("Content-Type", mime))
+        .insert_header(("Content-Length", content_len.to_string()))
+        .insert_header(("Accept-Ranges", "bytes"))
+        .insert_header(("Cache-Control", "private, max-age=3600"))
+        .insert_header(("X-Telegram-Drive-Cache", "enabled"));
+
+    if status == StatusCode::PARTIAL_CONTENT {
+        response.insert_header((
+            "Content-Range",
+            format!("bytes {}-{}/{}", start, end, total_size),
+        ));
+    }
+
+    Ok(response.streaming(stream))
+}
+
+fn direct_stream_response(
+    req: HttpRequest,
+    client: grammers_client::Client,
+    media: Media,
+    read_permit: tokio::sync::OwnedSemaphorePermit,
+    size: u64,
+    mime: String,
+    message_id: i32,
+) -> HttpResponse {
+    if size == 0 {
+        let mut download_iter = client.iter_download(&media).chunk_size(STREAM_CHUNK_SIZE);
+        let stream = async_stream::stream! {
+            let _read_permit = read_permit;
+            loop {
+                match timeout(Duration::from_secs(30), download_iter.next()).await {
+                    Ok(Ok(Some(bytes))) => {
+                        yield Ok::<_, actix_web::Error>(web::Bytes::from(bytes));
+                    }
+                    Ok(Ok(None)) => break,
+                    Ok(Err(err)) => {
+                        yield Err::<web::Bytes, actix_web::Error>(
+                            ErrorBadGateway(format!("Telegram stream error: {}", err))
+                        );
+                        break;
+                    }
+                    Err(_) => {
+                        yield Err::<web::Bytes, actix_web::Error>(
+                            ErrorGatewayTimeout("Telegram stream timed out")
+                        );
+                        break;
+                    }
+                }
+            }
+        };
+
+        let mut response = HttpResponse::Ok();
+        response
+            .insert_header(("Content-Type", mime))
+            .insert_header(("Cache-Control", "private, max-age=120"));
+        if req.method() == Method::HEAD {
+            return response.finish();
+        }
+        return response.streaming(stream);
+    }
+
+    let requested_range = req.headers().get(header::RANGE);
+    let range = parse_range(requested_range, size);
+    if requested_range.is_some() && range.is_none() {
+        return HttpResponse::RangeNotSatisfiable()
+            .insert_header(("Content-Range", format!("bytes */{}", size)))
+            .insert_header(("Accept-Ranges", "bytes"))
+            .finish();
+    }
+
+    let (start, end, status) = match range {
+        Some((start, end)) => (start, end, StatusCode::PARTIAL_CONTENT),
+        None => (0, size.saturating_sub(1), StatusCode::OK),
+    };
+    let content_len = end.saturating_sub(start).saturating_add(1);
+    let skip_chunks = (start / STREAM_CHUNK_SIZE as u64) as i32;
+    let skip_bytes = (start % STREAM_CHUNK_SIZE as u64) as usize;
+    let mut remaining = content_len;
+
+    let mut download_iter = client
+        .iter_download(&media)
+        .chunk_size(STREAM_CHUNK_SIZE)
+        .skip_chunks(skip_chunks);
+
+    let stream = async_stream::stream! {
+        let _read_permit = read_permit;
+        let mut first_chunk = true;
+
+        loop {
+            match timeout(Duration::from_secs(30), download_iter.next()).await {
+                Ok(Ok(Some(mut bytes))) => {
+                    if first_chunk && skip_bytes > 0 {
+                        first_chunk = false;
+                        if skip_bytes >= bytes.len() {
+                            continue;
+                        }
+                        bytes = bytes.split_off(skip_bytes);
+                    } else {
+                        first_chunk = false;
+                    }
+
+                    if remaining == 0 {
+                        break;
+                    }
+                    if bytes.len() as u64 > remaining {
+                        bytes.truncate(remaining as usize);
+                    }
+                    remaining = remaining.saturating_sub(bytes.len() as u64);
+                    yield Ok::<_, actix_web::Error>(web::Bytes::from(bytes));
+
+                    if remaining == 0 {
+                        break;
+                    }
+                }
+                Ok(Ok(None)) => break,
+                Ok(Err(err)) => {
+                    log::error!("Stream error on msg {}: {}", message_id, err);
+                    yield Err::<web::Bytes, actix_web::Error>(
+                        ErrorBadGateway(format!("Telegram stream error: {}", err))
+                    );
+                    break;
+                }
+                Err(_) => {
+                    log::error!("Stream timeout on msg {}", message_id);
+                    yield Err::<web::Bytes, actix_web::Error>(
+                        ErrorGatewayTimeout("Telegram stream timed out")
+                    );
+                    break;
+                }
+            }
+        }
+    };
+
+    let mut response = HttpResponse::build(status);
+    response
+        .insert_header(("Content-Type", mime))
+        .insert_header(("Content-Length", content_len.to_string()))
+        .insert_header(("Accept-Ranges", "bytes"))
+        .insert_header(("Cache-Control", "private, max-age=120"));
+
+    if status == StatusCode::PARTIAL_CONTENT {
+        response.insert_header((
+            "Content-Range",
+            format!("bytes {}-{}/{}", start, end, size),
+        ));
+    }
+
+    if req.method() == Method::HEAD {
+        return response.finish();
+    }
+
+    response.streaming(stream)
+}
+
 #[route("/stream/{folder_id}/{message_id}", method = "GET", method = "HEAD")]
 async fn stream_media(
     req: HttpRequest,
