@@ -26,7 +26,7 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
         setLoading(true);
         setError(null);
         setRetryNonce(0);
-        setPreviewUrl(nasApi.streamUrl(activeFolderId, file.id));
+        setPreviewUrl(nasApi.streamUrl(activeFolderId, file.id, true));
     }, [activeFolderId, file.id]);
 
     const markReady = () => {
@@ -111,7 +111,7 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
                                 src={mediaUrl}
                                 controls
                                 autoPlay
-                                preload="auto"
+                                preload="metadata"
                                 onLoadedMetadata={markReady}
                                 onCanPlay={markReady}
                                 onError={markError}
@@ -132,7 +132,7 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
                 <div className="mt-4 text-center">
                     <h3 className="text-lg font-medium text-white">{file.name}</h3>
                     <p className="text-sm text-white/50">
-                        Streaming from Telegram Drive
+                        Streaming from Telegram Drive · Pi cache enabled
                         {typeof currentIndex === 'number' && typeof totalItems === 'number' && totalItems > 0 && (
                             <span className="ml-2">- {currentIndex + 1}/{totalItems}</span>
                         )}
