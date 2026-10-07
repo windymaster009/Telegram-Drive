@@ -151,7 +151,7 @@ export const nasApi = {
     const params = new URLSearchParams();
     const accessToken = nasSession.getAccessToken();
     if (accessToken) params.set("access_token", accessToken);
-    if (preferPiCache) params.set("cache", "1");
+    if (preferPiCache) params.set("cache", "true");
     return `${getApiBaseUrl()}/api/telegram/stream/${encodeURIComponent(folder)}/${encodeURIComponent(String(messageId))}?${params.toString()}`;
   },
   listTelegramFiles: async (folderId: number | null) => {
