@@ -146,11 +146,12 @@ export const nasApi = {
     request<{ ok: boolean }>("/api/auth/logout", { method: "POST", body: JSON.stringify({}) }, csrfToken),
   me: () => request<MeResponse>("/api/auth/me"),
   telegramConnection: () => request<{ connected: boolean }>("/api/telegram/connection"),
-  streamUrl: (folderId: number | null, messageId: number) => {
+  streamUrl: (folderId: number | null, messageId: number, preferPiCache = false) => {
     const folder = folderId === null ? "home" : String(folderId);
     const params = new URLSearchParams();
     const accessToken = nasSession.getAccessToken();
     if (accessToken) params.set("access_token", accessToken);
+    if (preferPiCache) params.set("cache", "1");
     return `${getApiBaseUrl()}/api/telegram/stream/${encodeURIComponent(folder)}/${encodeURIComponent(String(messageId))}?${params.toString()}`;
   },
   listTelegramFiles: async (folderId: number | null) => {
