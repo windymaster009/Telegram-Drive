@@ -920,37 +920,70 @@ async fn stream_media_impl(
                                 let mime = mime_type_from_media(&media);
                                 log::debug!("Stream request: Starting download for msg {} (mime: {}, size: {})", message_id, mime, size);
 
-                                if size == 0 {
-                                    let mut download_iter =
-                                        client.iter_download(&media).chunk_size(STREAM_CHUNK_SIZE);
-                                    let read_permit = read_permit;
-                                    let stream = async_stream::stream! {
-                                        let _read_permit = read_permit;
-                                        loop {
-                                            match timeout(Duration::from_secs(30), download_iter.next()).await {
-                                                Ok(Ok(Some(bytes))) => {
-                                                    yield Ok::<_, actix_web::Error>(web::Bytes::from(bytes));
-                                                },
-                                                Ok(Ok(None)) => break,
-                                                Ok(Err(e)) => {
-                                                    yield Err::<web::Bytes, actix_web::Error>(ErrorBadGateway(format!("Telegram stream error: {}", e)));
-                                                    break;
-                                                },
+                                let size = size as u64;
+
+                                if query.cache.unwrap_or(false)
+                                    && mime.starts_with("video/")
+                                    && size > 0
+                                {
+                                    drop(read_permit);
+
+                                    match cached_stream_response(
+                                        req.clone(),
+                                        data.get_ref(),
+                                        client.clone(),
+                                        media.clone(),
+                                        folder_id,
+                                        message_id,
+                                        size,
+                                        mime.clone(),
+                                    )
+                                    .await
+                                    {
+                                        Ok(response) => return response,
+                                        Err(err) => {
+                                            log::warn!(
+                                                "Persistent stream cache failed for msg {}: {}. Falling back to direct Telegram streaming.",
+                                                message_id,
+                                                err
+                                            );
+
+                                            let fallback_permit = match data
+                                                .telegram
+                                                .read_gate
+                                                .clone()
+                                                .acquire_owned()
+                                                .await
+                                            {
+                                                Ok(permit) => permit,
                                                 Err(_) => {
-                                                    yield Err::<web::Bytes, actix_web::Error>(ErrorGatewayTimeout("Telegram stream timed out"));
-                                                    break;
+                                                    return HttpResponse::ServiceUnavailable()
+                                                        .body("Telegram read limiter is unavailable");
                                                 }
-                                            }
+                                            };
+
+                                            return direct_stream_response(
+                                                req,
+                                                client,
+                                                media,
+                                                fallback_permit,
+                                                size,
+                                                mime,
+                                                message_id,
+                                            );
                                         }
-                                    };
-                                    let mut response = HttpResponse::Ok();
-                                    response
-                                        .insert_header(("Content-Type", mime))
-                                        .insert_header(("Cache-Control", "private, max-age=120"));
-                                    if req.method() == Method::HEAD {
-                                        return response.finish();
                                     }
-                                    return response.streaming(stream);
+                                }
+
+                                return direct_stream_response(
+                                    req,
+                                    client,
+                                    media,
+                                    read_permit,
+                                    size,
+                                    mime,
+                                    message_id,
+                                );
                                 }
 
                                 let requested_range = req.headers().get(header::RANGE);
