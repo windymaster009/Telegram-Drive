@@ -33,6 +33,19 @@ pub struct PreviewDownloadJob {
 }
 
 #[derive(Clone)]
+pub struct StreamCacheJob {
+    pub path: PathBuf,
+    pub tail_path: Option<PathBuf>,
+    pub tail_start: Option<u64>,
+    pub total_size: u64,
+    pub downloaded: Arc<AtomicU64>,
+    pub tail_downloaded: Arc<AtomicU64>,
+    pub complete: Arc<AtomicBool>,
+    pub tail_complete: Arc<AtomicBool>,
+    pub error: Arc<Mutex<Option<String>>>,
+}
+
+#[derive(Clone)]
 pub struct DesktopGoogleLoginResult {
     pub response: Option<LoginResponse>,
     pub error: Option<String>,
@@ -51,6 +64,7 @@ pub struct NasState {
     pub cooldowns: Arc<Mutex<HashMap<String, i64>>>,
     pub desktop_google_logins: Arc<Mutex<HashMap<String, DesktopGoogleLoginResult>>>,
     pub preview_downloads: Arc<Mutex<HashMap<String, PreviewDownloadJob>>>,
+    pub stream_cache_jobs: Arc<Mutex<HashMap<String, StreamCacheJob>>>,
     pub upload_gate: Arc<Mutex<()>>,
     pub last_telegram_upload_at: Arc<Mutex<Option<Instant>>>,
     pub telegram_write_gate: Arc<Mutex<()>>,
@@ -93,6 +107,7 @@ impl NasState {
             cooldowns: Arc::new(Mutex::new(HashMap::new())),
             desktop_google_logins: Arc::new(Mutex::new(HashMap::new())),
             preview_downloads: Arc::new(Mutex::new(HashMap::new())),
+            stream_cache_jobs: Arc::new(Mutex::new(HashMap::new())),
             upload_gate: Arc::new(Mutex::new(())),
             last_telegram_upload_at: Arc::new(Mutex::new(None)),
             telegram_write_gate: Arc::new(Mutex::new(())),
