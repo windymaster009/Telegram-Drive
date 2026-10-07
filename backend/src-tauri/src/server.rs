@@ -4,7 +4,7 @@ use crate::nas::models::ApprovalStatus;
 use crate::nas::{
     api::configure_api,
     file_metadata::configure_api as configure_file_metadata_api,
-    state::NasState,
+    state::{NasState, StreamCacheJob},
 };
 use actix_cors::Cors;
 use actix_web::{
@@ -13,12 +13,19 @@ use actix_web::{
     route, web, App, HttpRequest, HttpResponse, HttpServer, Responder,
 };
 use grammers_client::types::Media;
+use std::collections::HashSet;
 use std::io::SeekFrom;
-use std::path::PathBuf;
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::time::{timeout, Duration};
 
-const STREAM_CHUNK_SIZE: i32 = 512 * 1024;
+const STREAM_CHUNK_SIZE: i32 = 1024 * 1024;
+const STREAM_CACHE_TAIL_BYTES: u64 = 8 * 1024 * 1024;
+const STREAM_CACHE_READ_CHUNK_SIZE: usize = 512 * 1024;
+const STREAM_CACHE_RANGE_WAIT: Duration = Duration::from_secs(45);
+const STREAM_CACHE_DEFAULT_MAX_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 const OWNER_CLIENT_TIMEOUT: Duration = Duration::from_secs(90);
 const PEER_RESOLVE_TIMEOUT: Duration = Duration::from_secs(30);
 const MESSAGE_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
@@ -34,6 +41,7 @@ pub struct StreamTokenData {
 struct StreamQuery {
     token: Option<String>,
     access_token: Option<String>,
+    cache: Option<bool>,
 }
 
 #[derive(serde::Deserialize)]
