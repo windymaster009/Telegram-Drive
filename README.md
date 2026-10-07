@@ -241,11 +241,25 @@ Admin folder permissions have three states:
 
 Folders owned by a user are always Read + Write for that user and cannot be hidden or downgraded in the admin UI.
 
-## Preview Behavior
+## Preview and Pi Video Cache Behavior
 
-Video, audio, and PDF previews use a local temp cache. When a preview opens, the backend downloads to the app cache and serves it through the local API. Closing the preview cancels the download and removes the temp file.
+Desktop/Tauri video, audio, and PDF previews use a local temp cache. When a desktop preview opens, the backend downloads to the app cache and serves it through the local API. Closing that preview cancels the temporary download.
 
-Some MP4 files store playback metadata at the end of the file. Telegram Drive also prefetches a small tail section for video files so playback can start earlier when possible.
+Hosted web video playback uses a separate persistent Pi/server cache. Opening a video in the full media player starts one background Telegram download into:
+
+```text
+<TELEGRAM_DRIVE_DATA_DIR>/stream-cache/
+```
+
+The browser reads byte ranges from the growing local cache instead of starting a new Telegram download for every range request. The final 8 MB of a video is also prefetched separately so MP4 metadata stored near the end of a file can be served quickly. Grid thumbnails keep using the lightweight direct stream path and do not fill the persistent cache.
+
+The persistent stream cache defaults to 10 GiB. Older inactive cache files are pruned as new videos are cached. To choose a different limit, set the maximum size in bytes:
+
+```text
+TELEGRAM_DRIVE_STREAM_CACHE_MAX_BYTES=10737418240
+```
+
+For example, 20 GiB is `21474836480`. Partial cache files are reused and resumed after a backend restart.
 
 ## Install Dependencies
 
