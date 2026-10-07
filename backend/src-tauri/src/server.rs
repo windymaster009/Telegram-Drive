@@ -15,7 +15,7 @@ use actix_web::{
 use grammers_client::types::Media;
 use std::collections::HashSet;
 use std::io::SeekFrom;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
@@ -362,8 +362,12 @@ async fn ensure_stream_cache_job(
                     }
 
                     file.flush().await.map_err(|err| err.to_string())?;
-                    tail_job.tail_complete.store(true, Ordering::SeqCst);
-                    Ok::<(), String>(())
+                    if tail_job.tail_downloaded.load(Ordering::SeqCst) >= tail_total {
+                        tail_job.tail_complete.store(true, Ordering::SeqCst);
+                        Ok::<(), String>(())
+                    } else {
+                        Err("Telegram stream cache tail ended before the requested bytes were complete".to_string())
+                    }
                 }
                 .await;
 
@@ -1483,6 +1487,7 @@ pub async fn start_server(
                 header::CONTENT_LENGTH,
                 header::CONTENT_RANGE,
                 header::CONTENT_TYPE,
+                header::HeaderName::from_static("x-telegram-drive-cache"),
             ])
             .supports_credentials()
             .allow_any_method()
