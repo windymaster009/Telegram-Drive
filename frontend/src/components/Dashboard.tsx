@@ -25,6 +25,7 @@ import { FolderActionModal } from './dashboard/FolderActionModal';
 import { FolderUnlockModal } from './dashboard/FolderUnlockModal';
 import { SelectFolderState } from './dashboard/SelectFolderState';
 import { FileMetadataEditHost } from './dashboard/FileMetadataEditHost';
+import { ServerResourcesPanel } from './dashboard/ServerResourcesPanel';
 
 // Hooks
 import { useTelegramConnection } from '../hooks/useTelegramConnection';
@@ -221,6 +222,14 @@ export function Dashboard({ onLogout, permissions, allowFolderManagement = true,
         queryFn: () => invoke<BandwidthStats>('cmd_get_bandwidth'),
         refetchInterval: 5000,
         enabled: !!store
+    });
+
+    const { data: serverResources, isLoading: serverResourcesLoading } = useQuery({
+        queryKey: ['server-resources'],
+        queryFn: () => nasApi.serverResources(),
+        refetchInterval: 5000,
+        enabled: !!store && isAdmin,
+        retry: false,
     });
 
 
@@ -670,6 +679,12 @@ export function Dashboard({ onLogout, permissions, allowFolderManagement = true,
                         </>
                     )}
                 />
+                {isAdmin && (
+                    <ServerResourcesPanel
+                        resources={serverResources || null}
+                        loading={serverResourcesLoading}
+                    />
+                )}
                 {searchTerm.length > 2 && (
                     <div className="px-3 pt-3 pb-0 sm:px-6 sm:pt-4">
                         <h2 className="text-sm font-medium text-telegram-subtext">
