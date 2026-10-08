@@ -263,7 +263,7 @@ async fn system_resources(
     state: web::Data<NasState>,
     req: HttpRequest,
 ) -> impl Responder {
-    if let Err(resp) = authorize(&state, &req, false).await {
+    if let Err(resp) = authorize_monitoring(&state, &req).await {
         return resp;
     }
 
@@ -300,7 +300,7 @@ async fn stream_cache_status(
     req: HttpRequest,
     path: web::Path<(String, i32)>,
 ) -> impl Responder {
-    if let Err(resp) = authorize(&state, &req, false).await {
+    if let Err(resp) = authorize_monitoring(&state, &req).await {
         return resp;
     }
 
@@ -2244,6 +2244,50 @@ async fn create_login_response(
         csrf_token,
         access_token: jwt,
     })
+}
+
+async fn authorize_monitoring(
+    state: &NasState,
+    req: &HttpRequest,
+) -> Result<(), HttpResponse> {
+    let token = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(str::to_owned)
+        .or_else(|| {
+            req.cookie(&state.session_cookie_name)
+                .map(|cookie| cookie.value().to_string())
+        })
+        .ok_or_else(|| {
+            HttpResponse::Unauthorized().json(json!({ "error": "Missing session token" }))
+        })?;
+
+    let claims = state
+        .decode_session_jwt(&token)
+        .map_err(|_| HttpResponse::Unauthorized().json(json!({ "error": "Invalid session" })))?;
+
+    let record = state
+        .db
+        .get_session(claims.sid)
+        .await
+        .map_err(|err| HttpResponse::InternalServerError().json(json!({ "error": err })))?
+        .ok_or_else(|| HttpResponse::Unauthorized().json(json!({ "error": "Session expired" })))?;
+
+    if record.disabled || record.session.expires_at < now_ts() {
+        return Err(
+            HttpResponse::Unauthorized().json(json!({ "error": "Session is no longer valid" }))
+        );
+    }
+
+    if !record.is_approved || record.approval_status != ApprovalStatus::Approved {
+        return Err(HttpResponse::Forbidden().json(json!({
+            "error": "Account approval is required before accessing Telegram Drive"
+        })));
+    }
+
+    Ok(())
 }
 
 async fn authorize(
