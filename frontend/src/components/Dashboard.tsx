@@ -227,7 +227,7 @@ export function Dashboard({ onLogout, permissions, allowFolderManagement = true,
     const { data: serverResources, isLoading: serverResourcesLoading } = useQuery({
         queryKey: ['server-resources'],
         queryFn: () => nasApi.serverResources(),
-        refetchInterval: 5000,
+        refetchInterval: 10000,
         enabled: !!store && isAdmin,
         retry: false,
     });
