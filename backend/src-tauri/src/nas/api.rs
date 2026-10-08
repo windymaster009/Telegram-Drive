@@ -2,7 +2,7 @@ use actix_web::cookie::{Cookie, SameSite};
 use actix_web::{delete, get, http::header, post, put, web, HttpRequest, HttpResponse, Responder};
 use futures::StreamExt;
 use serde_json::json;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::Ordering;
 use sysinfo::{Disks, System};
 use time::Duration;
