@@ -7,6 +7,8 @@ import type {
   MeResponse,
   PermissionAssignment,
   QrTokenResponse,
+  ServerResources,
+  StreamCacheStatus,
   SystemStatus,
 } from "@shared/nas";
 import type { TelegramFile, TelegramFolder } from "@shared/telegram";
@@ -132,6 +134,13 @@ async function mergeFileMetadata(files: TelegramFile[], folderId: number | null)
 
 export const nasApi = {
   systemStatus: () => request<SystemStatus>("/api/system/status"),
+  serverResources: () => request<ServerResources>("/api/system/resources"),
+  streamCacheStatus: (folderId: number | null, messageId: number) => {
+    const folder = folderId === null ? "home" : String(folderId);
+    return request<StreamCacheStatus>(
+      `/api/telegram/stream-cache/${encodeURIComponent(folder)}/${encodeURIComponent(String(messageId))}/status`
+    );
+  },
   bootstrap: (payload: { username: string; password: string; display_name: string }) =>
     request<LoginResponse>("/api/admin/bootstrap", { method: "POST", body: JSON.stringify(payload) }),
   googleLogin: (payload: { code: string; redirect_uri?: string }) =>
