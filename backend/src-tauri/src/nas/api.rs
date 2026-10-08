@@ -2,6 +2,9 @@ use actix_web::cookie::{Cookie, SameSite};
 use actix_web::{delete, get, http::header, post, put, web, HttpRequest, HttpResponse, Responder};
 use futures::StreamExt;
 use serde_json::json;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
+use sysinfo::{Disks, System};
 use time::Duration;
 use tokio::time::{timeout, Duration as TokioDuration};
 
@@ -69,6 +72,8 @@ struct RequestContext {
 
 pub fn configure_api(cfg: &mut web::ServiceConfig) {
     cfg.service(system_status)
+        .service(system_resources)
+        .service(stream_cache_status)
         .service(me)
         .service(google_login)
         .service(google_desktop_complete)
@@ -132,6 +137,159 @@ async fn system_status(state: web::Data<NasState>) -> impl Responder {
         owner_connected,
         api_base_url: state.api_base_url.clone(),
     })
+}
+
+
+fn dir_size(path: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+
+    entries
+        .flatten()
+        .map(|entry| {
+            let path = entry.path();
+            match entry.metadata() {
+                Ok(metadata) if metadata.is_file() => metadata.len(),
+                Ok(metadata) if metadata.is_dir() => dir_size(&path),
+                _ => 0,
+            }
+        })
+        .sum()
+}
+
+fn stream_cache_limit_bytes() -> u64 {
+    std::env::var("TELEGRAM_DRIVE_STREAM_CACHE_MAX_BYTES")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(10 * 1024 * 1024 * 1024)
+}
+
+fn hostname() -> Option<String> {
+    std::env::var("HOSTNAME")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            std::fs::read_to_string("/etc/hostname")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+}
+
+fn best_disk_for_path<'a>(disks: &'a Disks, path: &Path) -> Option<&'a sysinfo::Disk> {
+    disks
+        .list()
+        .iter()
+        .filter(|disk| path.starts_with(disk.mount_point()))
+        .max_by_key(|disk| disk.mount_point().components().count())
+        .or_else(|| disks.list().first())
+}
+
+#[get("/api/system/resources")]
+async fn system_resources(
+    state: web::Data<NasState>,
+    req: HttpRequest,
+) -> impl Responder {
+    if let Err(resp) = authorize(&state, &req, false).await {
+        return resp;
+    }
+
+    let mut system = System::new_all();
+    system.refresh_memory();
+
+    let memory_total = system.total_memory();
+    let memory_available = system.available_memory();
+    let memory_used = memory_total.saturating_sub(memory_available);
+
+    let disks = Disks::new_with_refreshed_list();
+    let data_path = state
+        .app_data_dir
+        .canonicalize()
+        .unwrap_or_else(|_| state.app_data_dir.clone());
+
+    let (storage_total, storage_available, storage_mount) =
+        if let Some(disk) = best_disk_for_path(&disks, &data_path) {
+            (
+                disk.total_space(),
+                disk.available_space(),
+                disk.mount_point().to_string_lossy().to_string(),
+            )
+        } else {
+            (0, 0, String::new())
+        };
+
+    let cache_dir = state.app_data_dir.join("stream-cache");
+    let stream_cache_used = dir_size(&cache_dir);
+    let stream_cache_limit = stream_cache_limit_bytes();
+
+    HttpResponse::Ok().json(json!({
+        "hostname": hostname(),
+        "memory_total": memory_total,
+        "memory_used": memory_used,
+        "memory_available": memory_available,
+        "storage_total": storage_total,
+        "storage_used": storage_total.saturating_sub(storage_available),
+        "storage_available": storage_available,
+        "storage_mount": storage_mount,
+        "stream_cache_used": stream_cache_used,
+        "stream_cache_limit": stream_cache_limit,
+    }))
+}
+
+#[get("/api/telegram/stream-cache/{folder_id}/{message_id}/status")]
+async fn stream_cache_status(
+    state: web::Data<NasState>,
+    req: HttpRequest,
+    path: web::Path<(String, i32)>,
+) -> impl Responder {
+    if let Err(resp) = authorize(&state, &req, false).await {
+        return resp;
+    }
+
+    let (folder_id, message_id) = path.into_inner();
+    let folder_key = match folder_id.as_str() {
+        "me" | "home" | "null" => "home".to_string(),
+        _ => folder_id,
+    };
+    let key = format!("{}_{}", folder_key, message_id);
+
+    let job = {
+        let jobs = state.stream_cache_jobs.lock().await;
+        jobs.get(&key).cloned()
+    };
+
+    let Some(job) = job else {
+        return HttpResponse::Ok().json(json!({
+            "active": false,
+            "downloaded": 0_u64,
+            "total_size": 0_u64,
+            "percent": 0.0_f64,
+            "complete": false,
+            "tail_downloaded": 0_u64,
+            "tail_ready": false,
+        }));
+    };
+
+    let downloaded = job.downloaded.load(Ordering::SeqCst).min(job.total_size);
+    let total_size = job.total_size;
+    let percent = if total_size > 0 {
+        (downloaded as f64 / total_size as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    HttpResponse::Ok().json(json!({
+        "active": true,
+        "downloaded": downloaded,
+        "total_size": total_size,
+        "percent": percent,
+        "complete": job.complete.load(Ordering::SeqCst),
+        "tail_downloaded": job.tail_downloaded.load(Ordering::SeqCst),
+        "tail_ready": job.tail_complete.load(Ordering::SeqCst),
+    }))
 }
 
 #[post("/api/admin/bootstrap")]
