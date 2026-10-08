@@ -4,7 +4,6 @@ use futures::StreamExt;
 use serde_json::json;
 use std::path::Path;
 use std::sync::atomic::Ordering;
-use sysinfo::{Disks, System};
 use time::Duration;
 use tokio::time::{timeout, Duration as TokioDuration};
 
@@ -179,13 +178,84 @@ fn hostname() -> Option<String> {
         })
 }
 
-fn best_disk_for_path<'a>(disks: &'a Disks, path: &Path) -> Option<&'a sysinfo::Disk> {
-    disks
-        .list()
-        .iter()
-        .filter(|disk| path.starts_with(disk.mount_point()))
-        .max_by_key(|disk| disk.mount_point().components().count())
-        .or_else(|| disks.list().first())
+#[cfg(target_os = "linux")]
+fn memory_stats() -> (u64, u64, u64) {
+    let Ok(content) = std::fs::read_to_string("/proc/meminfo") else {
+        return (0, 0, 0);
+    };
+
+    let mut total_kib = 0_u64;
+    let mut available_kib = 0_u64;
+
+    for line in content.lines() {
+        if let Some(value) = line.strip_prefix("MemTotal:") {
+            total_kib = value
+                .split_whitespace()
+                .next()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0);
+        } else if let Some(value) = line.strip_prefix("MemAvailable:") {
+            available_kib = value
+                .split_whitespace()
+                .next()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0);
+        }
+    }
+
+    let total = total_kib.saturating_mul(1024);
+    let available = available_kib.saturating_mul(1024);
+    (total, total.saturating_sub(available), available)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn memory_stats() -> (u64, u64, u64) {
+    (0, 0, 0)
+}
+
+#[cfg(unix)]
+fn disk_stats(path: &Path) -> (u64, u64, u64, String) {
+    let output = std::process::Command::new("df")
+        .arg("-Pk")
+        .arg(path)
+        .output();
+
+    let Ok(output) = output else {
+        return (0, 0, 0, String::new());
+    };
+    if !output.status.success() {
+        return (0, 0, 0, String::new());
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let Some(line) = text.lines().filter(|line| !line.trim().is_empty()).last() else {
+        return (0, 0, 0, String::new());
+    };
+    let fields = line.split_whitespace().collect::<Vec<_>>();
+    if fields.len() < 6 {
+        return (0, 0, 0, String::new());
+    }
+
+    let total = fields[1]
+        .parse::<u64>()
+        .unwrap_or(0)
+        .saturating_mul(1024);
+    let used = fields[2]
+        .parse::<u64>()
+        .unwrap_or(0)
+        .saturating_mul(1024);
+    let available = fields[3]
+        .parse::<u64>()
+        .unwrap_or(0)
+        .saturating_mul(1024);
+    let mount = fields[5..].join(" ");
+
+    (total, used, available, mount)
+}
+
+#[cfg(not(unix))]
+fn disk_stats(_path: &Path) -> (u64, u64, u64, String) {
+    (0, 0, 0, String::new())
 }
 
 #[get("/api/system/resources")]
@@ -197,29 +267,14 @@ async fn system_resources(
         return resp;
     }
 
-    let mut system = System::new_all();
-    system.refresh_memory();
+    let (memory_total, memory_used, memory_available) = memory_stats();
 
-    let memory_total = system.total_memory();
-    let memory_available = system.available_memory();
-    let memory_used = memory_total.saturating_sub(memory_available);
-
-    let disks = Disks::new_with_refreshed_list();
     let data_path = state
         .app_data_dir
         .canonicalize()
         .unwrap_or_else(|_| state.app_data_dir.clone());
-
-    let (storage_total, storage_available, storage_mount) =
-        if let Some(disk) = best_disk_for_path(&disks, &data_path) {
-            (
-                disk.total_space(),
-                disk.available_space(),
-                disk.mount_point().to_string_lossy().to_string(),
-            )
-        } else {
-            (0, 0, String::new())
-        };
+    let (storage_total, storage_used, storage_available, storage_mount) =
+        disk_stats(&data_path);
 
     let cache_dir = state.app_data_dir.join("stream-cache");
     let stream_cache_used = dir_size(&cache_dir);
@@ -231,7 +286,7 @@ async fn system_resources(
         "memory_used": memory_used,
         "memory_available": memory_available,
         "storage_total": storage_total,
-        "storage_used": storage_total.saturating_sub(storage_available),
+        "storage_used": storage_used,
         "storage_available": storage_available,
         "storage_mount": storage_mount,
         "stream_cache_used": stream_cache_used,
