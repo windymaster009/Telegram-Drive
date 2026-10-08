@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { Database, HardDrive, MemoryStick, Server } from 'lucide-react';
 import type { ServerResources } from '@shared/nas';
 import { formatBytes } from '../../utils';
@@ -19,7 +20,7 @@ function ResourceCard({
     subtext,
     progress,
 }: {
-    icon: React.ReactNode;
+    icon: ReactNode;
     label: string;
     value: string;
     subtext: string;
