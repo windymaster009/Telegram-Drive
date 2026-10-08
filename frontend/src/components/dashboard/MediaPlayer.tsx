@@ -62,7 +62,7 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
         };
 
         void refreshCacheStatus();
-        timer = window.setInterval(refreshCacheStatus, 1000);
+        timer = window.setInterval(refreshCacheStatus, 2000);
 
         return () => {
             cancelled = true;
