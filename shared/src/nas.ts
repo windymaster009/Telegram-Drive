@@ -2,6 +2,29 @@ export type AppRole = "admin" | "user";
 export type AccessLevel = "read_only" | "read_write";
 export type ApprovalStatus = "pending" | "approved" | "rejected";
 
+export interface ServerResources {
+  hostname?: string | null;
+  memory_total: number;
+  memory_used: number;
+  memory_available: number;
+  storage_total: number;
+  storage_used: number;
+  storage_available: number;
+  storage_mount: string;
+  stream_cache_used: number;
+  stream_cache_limit: number;
+}
+
+export interface StreamCacheStatus {
+  active: boolean;
+  downloaded: number;
+  total_size: number;
+  percent: number;
+  complete: boolean;
+  tail_downloaded: number;
+  tail_ready: boolean;
+}
+
 export interface SystemStatus {
   setup_required: boolean;
   owner_configured: boolean;

@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { X, ChevronLeft, ChevronRight } from 'lucide-react';
 import type { TelegramFile } from '@shared/telegram';
-import { isVideoFile } from '../../utils';
+import type { StreamCacheStatus } from '@shared/nas';
+import { formatBytes, isVideoFile } from '../../utils';
 import { nasApi } from '../../lib/nasApi';
 
 interface MediaPlayerProps {
@@ -19,6 +20,7 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [retryNonce, setRetryNonce] = useState(0);
+    const [cacheStatus, setCacheStatus] = useState<StreamCacheStatus | null>(null);
 
     const isVideo = isVideoFile(file.name);
 
@@ -40,6 +42,33 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
     };
 
     const mediaUrl = previewUrl ? `${previewUrl}&retry=${retryNonce}` : null;
+
+    useEffect(() => {
+        if (!isVideo) {
+            setCacheStatus(null);
+            return;
+        }
+
+        let cancelled = false;
+        let timer: number | undefined;
+
+        const refreshCacheStatus = async () => {
+            try {
+                const status = await nasApi.streamCacheStatus(activeFolderId, file.id);
+                if (!cancelled) setCacheStatus(status);
+            } catch {
+                if (!cancelled) setCacheStatus(null);
+            }
+        };
+
+        void refreshCacheStatus();
+        timer = window.setInterval(refreshCacheStatus, 2000);
+
+        return () => {
+            cancelled = true;
+            if (timer !== undefined) window.clearInterval(timer);
+        };
+    }, [activeFolderId, file.id, isVideo]);
 
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
@@ -137,6 +166,25 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
                             <span className="ml-2">- {currentIndex + 1}/{totalItems}</span>
                         )}
                     </p>
+                    {cacheStatus?.active && cacheStatus.total_size > 0 && (
+                        <div className="mx-auto mt-3 w-full max-w-md">
+                            <div className="mb-1 flex items-center justify-between gap-3 text-xs text-white/60">
+                                <span>
+                                    Pi cache {cacheStatus.complete ? 'complete' : `${Math.min(100, cacheStatus.percent).toFixed(0)}%`}
+                                </span>
+                                <span>
+                                    {formatBytes(cacheStatus.downloaded)} / {formatBytes(cacheStatus.total_size)}
+                                    {cacheStatus.tail_ready ? ' · metadata ready' : ''}
+                                </span>
+                            </div>
+                            <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
+                                <div
+                                    className="h-full rounded-full bg-telegram-primary transition-all duration-500"
+                                    style={{ width: `${Math.min(100, cacheStatus.percent)}%` }}
+                                />
+                            </div>
+                        </div>
+                    )}
                 </div>
             </div>
         </div>

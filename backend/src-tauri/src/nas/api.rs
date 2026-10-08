@@ -2,6 +2,8 @@ use actix_web::cookie::{Cookie, SameSite};
 use actix_web::{delete, get, http::header, post, put, web, HttpRequest, HttpResponse, Responder};
 use futures::StreamExt;
 use serde_json::json;
+use std::path::Path;
+use std::sync::atomic::Ordering;
 use time::Duration;
 use tokio::time::{timeout, Duration as TokioDuration};
 
@@ -69,6 +71,8 @@ struct RequestContext {
 
 pub fn configure_api(cfg: &mut web::ServiceConfig) {
     cfg.service(system_status)
+        .service(system_resources)
+        .service(stream_cache_status)
         .service(me)
         .service(google_login)
         .service(google_desktop_complete)
@@ -132,6 +136,215 @@ async fn system_status(state: web::Data<NasState>) -> impl Responder {
         owner_connected,
         api_base_url: state.api_base_url.clone(),
     })
+}
+
+
+fn dir_size(path: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+
+    entries
+        .flatten()
+        .map(|entry| {
+            let path = entry.path();
+            match entry.metadata() {
+                Ok(metadata) if metadata.is_file() => metadata.len(),
+                Ok(metadata) if metadata.is_dir() => dir_size(&path),
+                _ => 0,
+            }
+        })
+        .sum()
+}
+
+fn stream_cache_limit_bytes() -> u64 {
+    std::env::var("TELEGRAM_DRIVE_STREAM_CACHE_MAX_BYTES")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(10 * 1024 * 1024 * 1024)
+}
+
+fn hostname() -> Option<String> {
+    std::env::var("HOSTNAME")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            std::fs::read_to_string("/etc/hostname")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+}
+
+#[cfg(target_os = "linux")]
+fn memory_stats() -> (u64, u64, u64) {
+    let Ok(content) = std::fs::read_to_string("/proc/meminfo") else {
+        return (0, 0, 0);
+    };
+
+    let mut total_kib = 0_u64;
+    let mut available_kib = 0_u64;
+
+    for line in content.lines() {
+        if let Some(value) = line.strip_prefix("MemTotal:") {
+            total_kib = value
+                .split_whitespace()
+                .next()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0);
+        } else if let Some(value) = line.strip_prefix("MemAvailable:") {
+            available_kib = value
+                .split_whitespace()
+                .next()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0);
+        }
+    }
+
+    let total = total_kib.saturating_mul(1024);
+    let available = available_kib.saturating_mul(1024);
+    (total, total.saturating_sub(available), available)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn memory_stats() -> (u64, u64, u64) {
+    (0, 0, 0)
+}
+
+#[cfg(unix)]
+fn disk_stats(path: &Path) -> (u64, u64, u64, String) {
+    let output = std::process::Command::new("df")
+        .arg("-Pk")
+        .arg(path)
+        .output();
+
+    let Ok(output) = output else {
+        return (0, 0, 0, String::new());
+    };
+    if !output.status.success() {
+        return (0, 0, 0, String::new());
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let Some(line) = text.lines().filter(|line| !line.trim().is_empty()).last() else {
+        return (0, 0, 0, String::new());
+    };
+    let fields = line.split_whitespace().collect::<Vec<_>>();
+    if fields.len() < 6 {
+        return (0, 0, 0, String::new());
+    }
+
+    let total = fields[1]
+        .parse::<u64>()
+        .unwrap_or(0)
+        .saturating_mul(1024);
+    let used = fields[2]
+        .parse::<u64>()
+        .unwrap_or(0)
+        .saturating_mul(1024);
+    let available = fields[3]
+        .parse::<u64>()
+        .unwrap_or(0)
+        .saturating_mul(1024);
+    let mount = fields[5..].join(" ");
+
+    (total, used, available, mount)
+}
+
+#[cfg(not(unix))]
+fn disk_stats(_path: &Path) -> (u64, u64, u64, String) {
+    (0, 0, 0, String::new())
+}
+
+#[get("/api/system/resources")]
+async fn system_resources(
+    state: web::Data<NasState>,
+    req: HttpRequest,
+) -> impl Responder {
+    if let Err(resp) = authorize_monitoring(&state, &req).await {
+        return resp;
+    }
+
+    let (memory_total, memory_used, memory_available) = memory_stats();
+
+    let data_path = state
+        .app_data_dir
+        .canonicalize()
+        .unwrap_or_else(|_| state.app_data_dir.clone());
+    let (storage_total, storage_used, storage_available, storage_mount) =
+        disk_stats(&data_path);
+
+    let cache_dir = state.app_data_dir.join("stream-cache");
+    let stream_cache_used = dir_size(&cache_dir);
+    let stream_cache_limit = stream_cache_limit_bytes();
+
+    HttpResponse::Ok().json(json!({
+        "hostname": hostname(),
+        "memory_total": memory_total,
+        "memory_used": memory_used,
+        "memory_available": memory_available,
+        "storage_total": storage_total,
+        "storage_used": storage_used,
+        "storage_available": storage_available,
+        "storage_mount": storage_mount,
+        "stream_cache_used": stream_cache_used,
+        "stream_cache_limit": stream_cache_limit,
+    }))
+}
+
+#[get("/api/telegram/stream-cache/{folder_id}/{message_id}/status")]
+async fn stream_cache_status(
+    state: web::Data<NasState>,
+    req: HttpRequest,
+    path: web::Path<(String, i32)>,
+) -> impl Responder {
+    if let Err(resp) = authorize_monitoring(&state, &req).await {
+        return resp;
+    }
+
+    let (folder_id, message_id) = path.into_inner();
+    let folder_key = match folder_id.as_str() {
+        "me" | "home" | "null" => "home".to_string(),
+        _ => folder_id,
+    };
+    let key = format!("{}_{}", folder_key, message_id);
+
+    let job = {
+        let jobs = state.stream_cache_jobs.lock().await;
+        jobs.get(&key).cloned()
+    };
+
+    let Some(job) = job else {
+        return HttpResponse::Ok().json(json!({
+            "active": false,
+            "downloaded": 0_u64,
+            "total_size": 0_u64,
+            "percent": 0.0_f64,
+            "complete": false,
+            "tail_downloaded": 0_u64,
+            "tail_ready": false,
+        }));
+    };
+
+    let downloaded = job.downloaded.load(Ordering::SeqCst).min(job.total_size);
+    let total_size = job.total_size;
+    let percent = if total_size > 0 {
+        (downloaded as f64 / total_size as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    HttpResponse::Ok().json(json!({
+        "active": true,
+        "downloaded": downloaded,
+        "total_size": total_size,
+        "percent": percent,
+        "complete": job.complete.load(Ordering::SeqCst),
+        "tail_downloaded": job.tail_downloaded.load(Ordering::SeqCst),
+        "tail_ready": job.tail_complete.load(Ordering::SeqCst),
+    }))
 }
 
 #[post("/api/admin/bootstrap")]
@@ -2031,6 +2244,50 @@ async fn create_login_response(
         csrf_token,
         access_token: jwt,
     })
+}
+
+async fn authorize_monitoring(
+    state: &NasState,
+    req: &HttpRequest,
+) -> Result<(), HttpResponse> {
+    let token = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(str::to_owned)
+        .or_else(|| {
+            req.cookie(&state.session_cookie_name)
+                .map(|cookie| cookie.value().to_string())
+        })
+        .ok_or_else(|| {
+            HttpResponse::Unauthorized().json(json!({ "error": "Missing session token" }))
+        })?;
+
+    let claims = state
+        .decode_session_jwt(&token)
+        .map_err(|_| HttpResponse::Unauthorized().json(json!({ "error": "Invalid session" })))?;
+
+    let record = state
+        .db
+        .get_session(claims.sid)
+        .await
+        .map_err(|err| HttpResponse::InternalServerError().json(json!({ "error": err })))?
+        .ok_or_else(|| HttpResponse::Unauthorized().json(json!({ "error": "Session expired" })))?;
+
+    if record.disabled || record.session.expires_at < now_ts() {
+        return Err(
+            HttpResponse::Unauthorized().json(json!({ "error": "Session is no longer valid" }))
+        );
+    }
+
+    if !record.is_approved || record.approval_status != ApprovalStatus::Approved {
+        return Err(HttpResponse::Forbidden().json(json!({
+            "error": "Account approval is required before accessing Telegram Drive"
+        })));
+    }
+
+    Ok(())
 }
 
 async fn authorize(
